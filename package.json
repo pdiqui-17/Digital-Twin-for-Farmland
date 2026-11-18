@@ -21,7 +21,8 @@
     "db:migrate": "npm run build:shared && tsx db/migrate.ts up",
     "db:seed": "npm run build:shared && tsx db/migrate.ts seed",
     "db:setup": "npm run build:shared && tsx db/migrate.ts setup",
-    "dev:simulator": "npm run build:shared && npm run dev --workspace=@digital-twin/simulator"
+    "dev:simulator": "npm run build:shared && npm run dev --workspace=@digital-twin/simulator",
+    "dev:processor": "npm run build:shared && npm run dev --workspace=@digital-twin/processor"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
