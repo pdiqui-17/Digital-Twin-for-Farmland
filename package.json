@@ -20,7 +20,8 @@
     "infra:down": "docker compose --env-file .env -f deploy/docker-compose.dev.yml down",
     "db:migrate": "npm run build:shared && tsx db/migrate.ts up",
     "db:seed": "npm run build:shared && tsx db/migrate.ts seed",
-    "db:setup": "npm run build:shared && tsx db/migrate.ts setup"
+    "db:setup": "npm run build:shared && tsx db/migrate.ts setup",
+    "dev:simulator": "npm run build:shared && npm run dev --workspace=@digital-twin/simulator"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
