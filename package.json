@@ -13,12 +13,20 @@
   "scripts": {
     "build:shared": "npm run build --workspace=@digital-twin/shared",
     "build": "npm run build:shared && npm run build --workspaces --if-present",
-    "typecheck": "npm run typecheck --workspaces --if-present",
+    "typecheck": "npm run build:shared && npm run typecheck --workspaces --if-present && tsc -p db/tsconfig.json --noEmit",
     "test": "npm run test --workspaces --if-present",
-    "clean": "npm run clean --workspaces --if-present"
+    "clean": "npm run clean --workspaces --if-present",
+    "infra:up": "docker compose --env-file .env -f deploy/docker-compose.dev.yml up -d",
+    "infra:down": "docker compose --env-file .env -f deploy/docker-compose.dev.yml down",
+    "db:migrate": "npm run build:shared && tsx db/migrate.ts up",
+    "db:seed": "npm run build:shared && tsx db/migrate.ts seed",
+    "db:setup": "npm run build:shared && tsx db/migrate.ts setup"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
+    "@types/pg": "^8.11.10",
+    "dotenv": "^16.4.7",
+    "pg": "^8.13.1",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2"
   }
