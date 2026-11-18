@@ -1,0 +1,24 @@
+{
+  "name": "@digital-twin/shared",
+  "version": "0.1.0",
+  "description": "Shared contracts, Zod schemas, MQTT/Kafka topics, logger, and Prometheus metrics",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --import tsx --test src/__tests__/*.test.ts",
+    "clean": "node -e \"require('fs').rmSync('dist', { recursive: true, force: true })\""
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "prom-client": "^15.1.3",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21"
+  }
+}
