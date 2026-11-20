@@ -1,0 +1,20 @@
+{
+  "name": "digital-twin-farm",
+  "private": true,
+  "type": "module",
+  "workspaces": ["packages/*", "services/*"],
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "eval": "tsx services/analytics/src/evalCli.ts",
+    "fake-feed": "tsx scripts/fake-feed.ts"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.0.0",
+    "@types/pg": "^8.11.10",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  }
+}

@@ -1,0 +1,14 @@
+# Dùng chung cho 3 service của role B. Build từ thư mục gốc repo:
+#   docker build -f deploy/Dockerfile.service --build-arg SERVICE=twin-service -t farm/twin-service .
+# CHƯA build thử trong môi trường phát triển (không có Docker); C kiểm tra và tối ưu (multi-stage, image nhỏ hơn).
+FROM node:22-alpine
+WORKDIR /app
+ARG SERVICE
+ENV SERVICE=${SERVICE} NODE_ENV=production
+COPY package.json package-lock.json tsconfig.json ./
+COPY packages ./packages
+COPY services ./services
+# tsx là devDependency của root, dùng để chạy TypeScript trực tiếp.
+RUN npm ci --include=dev
+USER node
+CMD ["sh", "-c", "cd services/${SERVICE} && exec npx tsx src/index.ts"]
