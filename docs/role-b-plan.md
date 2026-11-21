@@ -1,7 +1,169 @@
-# Kế hoạch chi tiết Role B: Twin Core
+# Role B: Twin Core — cách hoạt động, kết quả và kế hoạch
 
-Phạm vi: `services/twin-service`, `services/analytics`, `services/controller`, phần schema twin trong `packages/shared`.
+Phạm vi: `services/twin-service`, `services/controller`, `services/analytics`, phần twin trong `packages/shared` (`src/twin.ts`).
+Tài liệu này có hai phần: **Phần I** giải thích hệ thống hoạt động thế nào và đã làm được gì (cập nhật 21/11/2026); **Phần II** là kế hoạch gốc, giữ để đối chiếu. Chi tiết API và biến môi trường: `docs/api.md`.
+
+**Tóm tắt.** Role B biến dữ liệu cảm biến của Role A thành quyết định: giữ trạng thái số của từng zone, tự mở/đóng van tưới, cảnh báo khi có sự cố và dự đoán độ ẩm. Mốc MVP "hạn hán → cảnh báo → tự tưới → độ ẩm phục hồi" đã chạy đạt với simulator thật của Role A; 123/123 test toàn repo pass. Code nằm trên nhánh `b/twin-core`.
+
+# Phần I. Cách hoạt động và kết quả
+
+## 1. Bức tranh tổng thể
+
+```
+           ROLE A                                          ROLE B
+ ┌───────────┐  MQTT   ┌───────────┐  Kafka telemetry.clean  ┌──────────────┐  HTTP /zones  ┌────────────┐
+ │ simulator │────────>│ processor │────────────────────────>│ twin-service │<──────────────│ controller │
+ │  (3001)   │ telemetry│  (3002)   │                         │    (3010)    │               │   (3011)   │
+ └───────────┘         └─────┬─────┘                         └──────┬───────┘               └─────┬──────┘
+      ^   │                  │ ghi                                  │ ghi                         │ ghi commands, alerts
+      │   │ MQTT valve/state  v                                      v                             │ Kafka alerts, Telegram
+      │   └──────────> sensor_readings                          twin_state                         │
+      │                (TimescaleDB)          twin nghe valve/state để biết van mở/đóng            │
+      └──────────────────────────── MQTT valve/cmd (lệnh mở/đóng) ─────────────────────────────────┘
+
+ analytics (3012): API dự đoán độ ẩm và so sánh lịch tưới, độc lập với vòng trên.
+```
+
+Một vòng: simulator đo → processor làm sạch, gắn cờ chất lượng → twin cập nhật trạng thái zone → controller đọc trạng thái mỗi vài giây, quyết định mở/đóng van và cảnh báo → simulator nhận lệnh, đất ẩm lên, vòng tiếp theo phản ánh lại.
+
+| Thành phần | Ai làm | Việc chính | Ghi bảng |
+|---|---|---|---|
+| simulator, processor, migration 001–004, seed | A | Tạo và làm sạch dữ liệu | `sensor_readings` |
+| twin-service | B | Bản sao số của từng zone | `twin_state` |
+| controller | B | Tưới tự động, cảnh báo | `commands`, `alerts` |
+| analytics | B | Dự đoán, what-if | (không) |
+| migration 005 | B (A đã duyệt) | Thêm `rule`, `closed_at` cho `alerts` | |
+
+## 2. Twin Service: bản sao số của từng zone
+
+Twin giữ cho mỗi zone một `ZoneState` (lưu ở cột JSONB `twin_state.state`): giá trị mới nhất của từng cảm biến, các chỉ số tổng hợp, trạng thái van, ngưỡng của zone và `status`.
+
+Khi nhận một bản tin cảm biến từ Kafka `telemetry.clean`:
+
+1. **Bỏ bản tin cũ hoặc trùng** (không mới hơn bản tin trước của cùng cảm biến), nên Kafka gửi lại hay gửi lệch thứ tự cũng không làm sai trạng thái.
+2. **Xét cờ chất lượng của processor.** Chỉ `ok` và `noisy_smoothed` được dùng để tính chỉ số. Bản tin `out_of_range`, `stuck`, `missing_signal` vẫn được lưu, nhưng cảm biến đó vào danh sách `faultySensors`.
+3. **Tính chỉ số dẫn xuất:**
+    - *Stress nước* 0–1: 0 khi độ ẩm còn từ cận dưới khoảng tối ưu trở lên, tăng tuyến tính tới 1 ở điểm héo.
+    - *Nguy cơ nấm* 0–1: cộng dồn số phút độ ẩm không khí ≥ 85% và nhiệt độ 15–28 °C; đủ 6 giờ liên tục thì bằng 1, điều kiện hết thì giảm gấp đôi tốc độ.
+4. **Xếp trạng thái:** `unknown` nếu quá `TWIN_STALE_AFTER_SEC` không có độ ẩm đất dùng được; `critical` / `dry` nếu dưới ngưỡng; còn lại `ok`.
+
+**Ngưỡng theo từng zone** lấy từ khoảng ẩm tối ưu trong bảng `zones` của A: khô khi dưới cận dưới, nguy cấp khi thấp hơn 10 điểm, điểm héo thấp hơn 20 điểm. Ví dụ zone-B (xà lách, tối ưu 55–80%): khô < 55%, nguy cấp < 45%.
+
+Twin cũng nghe MQTT `.../valve/state` để biết van đang mở hay đóng và lệnh nào vừa được thực hiện. Đầu ra: REST (`/zones`, lịch sử), SSE `/stream` đẩy cập nhật thời gian thực, metrics Prometheus.
+
+## 3. Controller: vòng tưới tự động
+
+Mỗi `CTRL_TICK_SEC` giây controller đọc trạng thái mọi zone từ twin, đánh giá cảnh báo, rồi chạy máy trạng thái van của từng zone:
+
+| Pha | Chuyển sang pha sau khi |
+|---|---|
+| `idle` (chờ) | độ ẩm < ngưỡng khô → gửi lệnh `open` (kèm thời lượng tối đa) |
+| `pending` (chờ van xác nhận) | van báo đã mở đúng lệnh → `watering`; quá `CTRL_ACK_TIMEOUT_SEC` → gửi `close` an toàn, cảnh báo, sang `cooldown` |
+| `watering` (đang tưới) | độ ẩm đạt điểm giữa khoảng tối ưu, hoặc quá thời lượng tối đa, hoặc mất dữ liệu → gửi `close`, sang `cooldown` |
+| `cooldown` (nghỉ) | đủ `CTRL_MIN_REST_SEC` → `idle` |
+
+Ví dụ zone-B: mở khi < 55%, đóng khi đạt 67,5% (giữa 55 và 80).
+
+Cơ chế an toàn:
+- Không có dữ liệu thì không mở; đang tưới mà mất dữ liệu thì đóng.
+- Van không xác nhận lệnh mở → gửi thêm lệnh đóng. Van không xác nhận lệnh đóng → lệnh `failed` và cảnh báo "có thể vẫn đang tưới".
+- Luôn nghỉ giữa hai lần tưới, không tưới liên tục.
+- Mỗi lệnh được ghi vào bảng `commands` *trước* khi gửi, có lý do (ví dụ "độ ẩm 53.8% < 55%"), và được theo dõi tới cuối: lệnh mở `sent → acknowledged → completed`, lệnh đóng `sent → completed`.
+- Khởi động lại: nạp lệnh gần nhất và cảnh báo đang mở từ DB, nên không tưới lại ngay và không báo trùng.
+
+## 4. Cảnh báo
+
+| Luật | Mở khi | Đóng khi |
+|---|---|---|
+| `soil_dry` | độ ẩm < ngưỡng khô | độ ẩm ≥ ngưỡng khô + 4 |
+| `soil_critical` | độ ẩm < ngưỡng nguy cấp | độ ẩm ≥ ngưỡng nguy cấp + 4 |
+| `zone_unknown` | mất dữ liệu độ ẩm ≥ 60 s | có dữ liệu lại |
+| `sensor_fault` | có cảm biến bị gắn cờ lỗi ≥ 15 s | hết cảm biến lỗi |
+| `fungal_risk` | nguy cơ nấm ≥ 0.7 | < 0.4 |
+| `valve_ack_timeout` | van không xác nhận lệnh mở/đóng | van xác nhận sau đó |
+
+Chống spam:
+- **Hysteresis**: ngưỡng đóng khác ngưỡng mở, nên giá trị dao động quanh ngưỡng chỉ sinh một cảnh báo.
+- **Thời gian xác nhận** (15 s / 60 s): lọc lỗi ngẫu nhiên chỉ một tick và khoảng trống dữ liệu lúc khởi động.
+- **Cooldown**: vừa đóng thì chưa mở lại ngay.
+
+Mỗi sự cố là **một dòng** trong bảng `alerts` (một `alertId` từ lúc mở đến lúc đóng, `closed_at` rỗng = đang mở). Chỉ controller ghi bảng này. Sự kiện mở/đóng cũng được đẩy lên Kafka `alerts` và Telegram (nếu cấu hình).
+
+## 5. Analytics: dự đoán và so sánh lịch tưới
+
+Mô hình cân bằng nước đơn giản, cố ý **không** chép công thức của simulator (để sai số không đẹp giả tạo):
+
+```
+độ ẩm(t+1) = độ ẩm(t) + Δt × ( −(bay hơi nền + bay hơi theo nhiệt độ × T) + hiệu quả tưới × van mở + hiệu quả mưa × mưa )
+```
+
+- `POST /model/calibrate`: fit 4 hệ số từ lịch sử bằng bình phương tối thiểu, ràng buộc không âm.
+- `POST /forecast`: quỹ đạo độ ẩm theo giờ, dùng dự báo thời tiết Open-Meteo.
+- `POST /whatif`: so sánh nhiều lịch tưới; với mỗi lịch trả độ ẩm thấp nhất, số giờ dưới khoảng tối ưu, số giờ dưới điểm héo, tổng nước, và chọn lịch tốt nhất.
+- `npm run eval`: MAE/RMSE của mô hình so với hai baseline (giữ nguyên giá trị, ngoại suy tuyến tính), chia train/test theo thời gian.
+
+Hiện trạng: API và đánh giá chạy được trên dữ liệu tổng hợp; **chưa** fit bằng dữ liệu thật trong DB, và controller **chưa** dùng dự đoán.
+
+## 6. Kết quả kiểm thử
+
+**Unit test**: 123/123 pass toàn repo; trong đó của B: twin 31, controller 46, analytics 29. Test controller có một "simulator mini" chạy cả vòng kín (khô → tưới → phục hồi), mất dữ liệu giữa lúc tưới, van không phản hồi, khởi động lại giữa lúc tưới.
+
+**Chạy thật với simulator của A** (21/11/2026, bật hạn hán, simulator tick 1 s ≈ nhanh 300 lần, khoảng 10 phút):
+
+| Zone | Mở van khi | Van xác nhận | Đóng van khi (mục tiêu) |
+|---|---|---|---|
+| B | 53,8% < 55 | sau 2 s | 69,8% (67,5) |
+| A | 44,9% < 45 | sau 2 s | 59,2% (57,5) |
+| C | 39,9% < 40 | sau 3 s | 52,6% (52,5) |
+
+- Tổng 16 chu kỳ tưới trên cả 4 zone; mỗi chu kỳ đúng một cảnh báo `soil_dry` mở rồi đóng, không lệnh trùng.
+- Tiêm lỗi `stuck` vào cảm biến độ ẩm không khí zone-A: twin đánh dấu cảm biến lỗi, controller mở `sensor_fault`, gỡ lỗi thì cảnh báo đóng.
+- Khởi động lại controller giữa chừng: không báo trùng, các lệnh còn dở được theo dõi tiếp.
+
+**Lỗi do chạy thật phát hiện ra, đã sửa kèm test:**
+1. Lỗi cảm biến ngẫu nhiên một tick (5 s) sinh cảnh báo bật/tắt liên tục → thêm thời gian xác nhận.
+2. Khởi động hệ thống bật `zone_unknown` cho cả 4 zone → như trên.
+3. Lệnh đóng van treo mãi ở `sent` → theo dõi xác nhận của lệnh đóng.
+4. Tin nhắn đóng cảnh báo ghi "Đã ổn định: … đang khô" → mỗi luật có câu đóng riêng.
+
+## 7. Quyết định thiết kế đã chốt
+
+| Quyết định | Lý do |
+|---|---|
+| Chỉ controller ghi bảng `alerts` (nhóm đã duyệt) | Một bảng một writer; cảnh báo có vòng đời mở/đóng cần một nơi quản lý duy nhất để không mở trùng và khôi phục đúng khi khởi động lại. Twin chỉ báo cảm biến lỗi trong `faultySensors` |
+| Giữ bảng `alerts` của A, chỉ thêm `rule`, `closed_at` (migration 005, A đã duyệt) | Không phá dữ liệu và truy vấn của A; `category` không đủ để phân biệt luật (`zone_unknown` và `sensor_fault` cùng category) |
+| Ngưỡng theo từng zone từ bảng `zones` | Mỗi loại cây cần độ ẩm khác nhau; ngưỡng nằm luôn trong `ZoneState` nên controller không cần đọc DB |
+| Logic nghiệp vụ là hàm thuần, I/O tách sau interface | Test được không cần Kafka/MQTT/Postgres; B không bị chặn khi hạ tầng chưa có |
+| Lỗi ghi DB thì ném ra để Kafka gửi lại | Không mất dữ liệu khi DB trục trặc |
+| Không thêm cảm biến mưa | Không có trong yêu cầu; fit mô hình trong lúc bật hạn hán (mưa = 0 là đúng thật) |
+
+## 8. Giới hạn và việc còn lại
+
+Giới hạn đã biết:
+- **Tốc độ mô phỏng.** Simulator mặc định nhanh 60 lần nhưng các mốc của controller tính bằng giây thật, nên đang phải chia tay (`CTRL_*` trong `.env.example`). Cùng nguyên nhân, nguy cơ nấm tích lũy chậm hơn thực tế và bước thời gian khi fit analytics bị lệch.
+- **Lỗi drift** (giá trị lệch dần) chỉ phát hiện được khi vượt giới hạn vật lý; processor không có cờ riêng.
+- **Mưa**: không có số đo, nên controller không chặn tưới khi mưa.
+
+Việc tiếp theo, theo thứ tự:
+1. Controller, twin và analytics tự suy tỉ lệ thời gian từ `SIMULATOR_TICK_INTERVAL_MS` và `SIMULATOR_PHYSICS_MINUTES_PER_TICK` (không cần A sửa gì).
+2. Fit mô hình analytics từ dữ liệu thật trong DB, có bảng MAE/RMSE cho báo cáo.
+3. Controller dùng dự đoán của analytics (yêu cầu tuần 6).
+4. Mở PR `b/twin-core` vào `main`.
+5. Báo cáo mục 5.4 và kịch bản demo.
+
+---
+
+# Phần II. Kế hoạch gốc (giữ để đối chiếu)
+
 Nguyên tắc: làm theo thứ tự phụ thuộc, mỗi bước có tiêu chí hoàn thành (DoD) kiểm tra được bằng test hoặc lệnh chạy.
+
+> **Thay đổi so với kế hoạch gốc sau khi tích hợp với Role A (2026-11-21):**
+> - Package tên `@digital-twin/*` (không phải `@farm/*`); schema chung của A, phần của B ở `packages/shared/src/twin.ts`.
+> - B1.2: dùng 4 loại cảm biến của A (`soil_moisture`, `air_temperature`, `air_humidity`, `light_intensity`); không thêm cảm biến mưa.
+> - B1.4: bỏ `010_twin.sql`; dùng migration 001–004 của A + `005_alert_lifecycle.sql` của B.
+> - B2.4: bỏ chế độ `INGEST=poll` (Kafka của A đã có). D5: biến là `TWIN_STALE_AFTER_SEC`.
+> - D6: nhóm đã duyệt, chỉ Controller ghi `alerts` và publish topic `alerts`.
+> - B3.6: closed loop đã chạy đạt với simulator thật (2026-11-21).
 
 ## 0. Quyết định thiết kế (chốt trước khi code)
 

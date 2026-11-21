@@ -41,7 +41,7 @@ Hợp đồng dữ liệu của Role B nằm ở `packages/shared/src/twin.ts` (
   "sensors": { "<sensorId>": { "type": "soil_moisture", "value": 52.1, "unit": "percent", "ts": "ISO", "quality": "ok" } },
   "metrics": { "soilMoisture": 52.1, "airTemperature": 21.4, "airHumidity": 78, "lightIntensity": 12000 },
   "derived": { "waterStress": 0.12, "fungalRisk": 0.3, "fungalAccumMin": 40 },
-  "faultySensors": ["sm-zone-B-1"],
+  "faultySensors": ["s-B-moisture"],
   "valve": { "state": "open | closed | unknown", "ts": "ISO | null", "lastCommandId": "cmd-..." },
   "thresholds": { "optimalLow": 55, "optimalHigh": 80, "dryBelow": 55, "criticalBelow": 45,
                   "wiltingPoint": 35, "fieldCapacity": 90, "staleAfterSec": 300 },
@@ -89,15 +89,20 @@ Máy trạng thái mỗi zone: `idle → pending → watering → cooldown → i
 |---|---|
 | Mở van (`idle → pending`) | `soilMoisture < thresholds.dryBelow`; gửi lệnh `open` với `durationSec = CTRL_MAX_RUN_SEC` |
 | Xác nhận (`pending → watering`) | van báo `open` với đúng `commandId` (hoặc `ts` mới hơn lệnh) |
-| Van không phản hồi | quá `CTRL_ACK_TIMEOUT_SEC`: gửi thêm lệnh `close` để an toàn, sinh cảnh báo `valve_ack_timeout` |
+| Van không xác nhận lệnh mở | quá `CTRL_ACK_TIMEOUT_SEC`: lệnh `open` thành `failed`, gửi thêm lệnh `close` để an toàn, sinh cảnh báo `valve_ack_timeout` |
 | Đóng van | độ ẩm ≥ `optimalLow + CTRL_STOP_FRACTION × (optimalHigh − optimalLow)`, hoặc chạy quá `CTRL_MAX_RUN_SEC`, hoặc mất dữ liệu độ ẩm |
 | Nghỉ (`cooldown`) | ít nhất `CTRL_MIN_REST_SEC` trước khi được mở lại |
 
 Ví dụ zone-B (tối ưu 55-80%): mở khi < 55%, đóng khi đạt 67,5%.
 Thiếu dữ liệu thì không mở. Van đang mở do nguồn khác thì không can thiệp.
-Chưa có cảm biến mưa nên controller hiện **không** chặn tưới khi mưa.
+Pipeline không có số đo mưa nên controller không chặn tưới khi trời mưa (giới hạn đã biết, không nằm trong yêu cầu).
 
-Lệnh gửi lên MQTT `farm/{farmId}/zone/{zoneId}/actuator/valve/cmd` (payload `ValveCommandMessage`, `actuatorId = valve-<zoneId>`) và ghi bảng `commands` với `status`: `sent → acknowledged → completed | failed`.
+Lệnh gửi lên MQTT `farm/{farmId}/zone/{zoneId}/actuator/valve/cmd` (payload `ValveCommandMessage`, `actuatorId = valve-<zoneId>`) và ghi bảng `commands`. Cột `status`:
+
+| Lệnh | Vòng đời |
+|---|---|
+| `open` | `sent` → `acknowledged` (van báo mở) → `completed` (đã đóng); `failed` nếu van không xác nhận trong `CTRL_ACK_TIMEOUT_SEC` |
+| `close` | `sent` → `completed` khi van báo `closed` với đúng `commandId`; `failed` nếu quá `CTRL_ACK_TIMEOUT_SEC` (kèm cảnh báo `valve_ack_timeout`; xác nhận muộn vẫn chuyển sang `completed`) |
 
 ### Cảnh báo
 
@@ -108,7 +113,9 @@ Lệnh gửi lên MQTT `farm/{farmId}/zone/{zoneId}/actuator/valve/cmd` (payload
 | `zone_unknown` | sensor_fault | warning | `status = unknown` | có lại dữ liệu |
 | `sensor_fault` | sensor_fault | warning | `faultySensors` không rỗng | `faultySensors` rỗng |
 | `fungal_risk` | fungal_risk | warning | `fungalRisk ≥ 0.7` | `fungalRisk < 0.4` |
-| `valve_ack_timeout` | system | warning | van không xác nhận lệnh mở | (sự kiện một lần) |
+| `valve_ack_timeout` | system | warning | van không xác nhận lệnh mở, hoặc lệnh đóng (van có thể vẫn đang tưới) | van xác nhận lệnh mở hoặc lệnh đóng sau đó |
+
+`zone_unknown` và `sensor_fault` chỉ mở khi điều kiện đúng liên tục ít nhất `CTRL_UNKNOWN_CONFIRM_SEC` / `CTRL_FAULT_CONFIRM_SEC` giây (giờ thật). Mục đích là lọc lỗi ngẫu nhiên chỉ kéo dài một tick của simulator và khoảng trống dữ liệu lúc khởi động.
 
 Mỗi sự cố có MỘT `alertId` cho cả vòng đời. Sau khi đóng, cùng rule trên cùng zone chỉ mở lại được sau `CTRL_ALERT_COOLDOWN_SEC`.
 
@@ -116,7 +123,7 @@ Mỗi sự cố có MỘT `alertId` cho cả vòng đời. Sau khi đóng, cùng
 - Kafka topic `alerts`: payload `TwinAlertEvent` = `AlertEventSchema` của Role A + `rule`, `state` (`open|closed`), `value`. Consumer chỉ biết schema của A vẫn parse được.
 - Telegram nếu có `TELEGRAM_TOKEN` và `TELEGRAM_CHAT_ID`, nếu không thì chỉ log.
 
-Khởi động lại: controller nạp các cảnh báo đang mở và lệnh gần nhất của mỗi zone từ DB, nên không mở cảnh báo trùng và không tưới lại ngay.
+Khởi động lại: controller nạp từ DB các cảnh báo đang mở và lệnh gần nhất của mỗi zone (kể cả lệnh `close` còn chờ xác nhận), nên không mở cảnh báo trùng và không tưới lại ngay.
 
 | Biến môi trường | Mặc định | Ý nghĩa |
 |---|---|---|
@@ -134,8 +141,10 @@ Khởi động lại: controller nạp các cảnh báo đang mở và lệnh g�
 | `CTRL_MIN_REST_SEC` | 3600 | |
 | `CTRL_ACK_TIMEOUT_SEC` | 30 | |
 | `CTRL_ALERT_COOLDOWN_SEC` | 600 | |
+| `CTRL_FAULT_CONFIRM_SEC` | 15 | lỗi cảm biến phải kéo dài chừng này mới mở `sensor_fault` (giờ thật, không chia theo tốc độ mô phỏng) |
+| `CTRL_UNKNOWN_CONFIRM_SEC` | 60 | mất dữ liệu phải kéo dài chừng này mới mở `zone_unknown` (giờ thật) |
 
-Khi simulator chạy tăng tốc (`SIMULATOR_PHYSICS_MINUTES_PER_TICK`), các mốc `CTRL_*` tính theo giờ thật, nên cần rút ngắn tương ứng. Hiện chưa có một biến tỉ lệ thời gian dùng chung (đang chờ A và B thống nhất).
+Các mốc `CTRL_*` hiện tính bằng giây thật. Simulator chạy nhanh `SIMULATOR_PHYSICS_MINUTES_PER_TICK × 60000 / SIMULATOR_TICK_INTERVAL_MS` lần (mặc định 60), nên khi demo phải tự chia `CTRL_TICK_SEC`, `CTRL_MAX_RUN_SEC`, `CTRL_MIN_REST_SEC`, `CTRL_ALERT_COOLDOWN_SEC` cho tỉ lệ này (xem mục 4). `CTRL_ACK_TIMEOUT_SEC` và `CTRL_*_CONFIRM_SEC` là độ trễ thật, không chia.
 
 ---
 
@@ -156,27 +165,57 @@ Khi simulator chạy tăng tốc (`SIMULATOR_PHYSICS_MINUTES_PER_TICK`), các m�
 | `FARM_LAT` `FARM_LON` | 11.9404, 108.4583 | Lâm Đồng |
 
 Lỗi nguồn thời tiết trả 502. Hệ số mặc định chỉ là giá trị khởi tạo: PHẢI chạy `/model/calibrate` bằng dữ liệu thật trước khi tin dự đoán.
-Chưa có cảm biến mưa nên khi fit hiện coi `rain = 0`.
+
+Lưu ý về dữ liệu:
+- Pipeline không có số đo mưa. Lấy mẫu fit trong lúc simulator bật hạn hán (khi đó mưa = 0 là đúng thật); hệ số mưa `rainGain` vì vậy không được fit.
+- `/forecast` lấy dự báo thật của hôm nay, còn simulator phát lại thời tiết 8–15/5/2025 với tốc độ tăng. Khi demo dùng `WEATHER=constant` để dự đoán không lệch với nông trại ảo.
 
 ---
 
 ## 4. Chạy local
 
+Cần `.env` (chép từ `.env.example`, có sẵn `TWIN_STORE=pg`, `TWIN_INGEST=kafka`, `CONTROLLER_STORE=pg`). Mỗi lệnh một terminal:
+
 ```bash
 npm run infra:up        # Postgres/Timescale, Kafka, Mosquitto, MinIO (deploy/docker-compose.dev.yml)
 npm run db:setup        # migration 001-005 + seed farm-01
-npm run dev:simulator   # Role A
-npm run dev:processor   # Role A
-npm run dev:twin        # TWIN_STORE=pg TWIN_INGEST=kafka
-npm run dev:controller  # CONTROLLER_STORE=pg
-npm run dev:analytics
+npm run dev:simulator   # Role A, cổng 3001
+npm run dev:processor   # Role A, cổng 3002
+npm run dev:twin
+npm run dev:controller
+npm run dev:analytics   # không cần cho vòng tưới
 ```
 
-Không có hạ tầng: `ENABLE_DEV_INGEST=1 npm run dev:twin` rồi `npm run fake-feed`.
+Không có hạ tầng: đặt `ENABLE_DEV_INGEST=1`, chạy `npm run dev:twin`, rồi `npm run fake-feed`.
 
-## 5. Việc còn chờ thống nhất
+### Kiểm thử vòng tưới (đã chạy đạt ngày 2026-11-21)
 
-- A + B: một biến môi trường chung cho tỉ lệ thời gian mô phỏng, để controller tự co các mốc `CTRL_*`.
-- A: thêm cảm biến mưa (sau đó controller chặn tưới khi mưa, analytics fit với mưa thật).
-- A duyệt migration 005 và quy ước "chỉ controller ghi `alerts`".
-- C: image (`deploy/Dockerfile.service`), các biến môi trường ở trên, import `monitoring/grafana/farm-twin.json`.
+Để thấy kết quả trong vài phút, cho simulator tick 1 giây (nhanh 300 lần) và chia các mốc controller theo tỉ lệ đó. Ví dụ trên PowerShell, đặt biến trong terminal trước khi chạy (biến môi trường thắng giá trị trong `.env`):
+
+```powershell
+# terminal simulator
+$env:SIMULATOR_TICK_INTERVAL_MS="1000"; $env:SIMULATOR_DROUGHT_MODE="true"; npm run dev:simulator
+# terminal controller
+$env:CTRL_TICK_SEC="2"; $env:CTRL_MAX_RUN_SEC="60"; $env:CTRL_MIN_REST_SEC="12"; $env:CTRL_ALERT_COOLDOWN_SEC="12"; npm run dev:controller
+```
+
+Kết quả mong đợi: mỗi zone khi xuống dưới `dryBelow` thì mở `soil_dry`, van mở và được xác nhận trong vài giây, độ ẩm tăng, van đóng quanh điểm giữa khoảng tối ưu (có thể lố 1–3 điểm ở tốc độ 300 lần), cảnh báo đóng khi vượt `dryBelow + 4`. Mọi lệnh trong `commands` kết thúc ở `completed`.
+
+API của simulator (Role A) để tạo tình huống:
+
+| Việc | Lệnh |
+|---|---|
+| Bật/tắt hạn hán | `POST :3001/simulation/scenario` `{"droughtMode": true}` |
+| Tiêm lỗi cảm biến | `POST :3001/simulation/faults` `{"sensorId": "s-A-humidity", "mode": "stuck"}` (`dropout`, `stuck`, `out_of_range`, `drift`) |
+| Gỡ mọi lỗi | `POST :3001/simulation/faults` `{"clearAll": true}` |
+| Xem trạng thái vật lý | `GET :3001/simulation/state` |
+
+Đừng tiêm lỗi vào cảm biến độ ẩm đất của zone đang test tưới: zone thành `unknown` và controller (đúng thiết kế) sẽ không tưới.
+
+## 5. Giới hạn đã biết
+
+- Các mốc `CTRL_*` phải chia tay theo tốc độ simulator (mục 2). Việc tiếp theo của B: tự suy tỉ lệ từ hai biến `SIMULATOR_*`.
+- `ts` của bản tin là giờ thật, nên ở tốc độ tăng: `fungalAccumMin` tích lũy chậm hơn thực tế (cảnh báo nấm khó bật) và `dt` khi fit analytics bị lệch theo tỉ lệ.
+- Lỗi `drift` của simulator không có cờ chất lượng riêng; chỉ phát hiện được khi giá trị vượt giới hạn vật lý (`out_of_range`).
+- Không có số đo mưa (xem mục 2 và 3).
+- C cần: image (`deploy/Dockerfile.service`), các biến môi trường ở trên, import `monitoring/grafana/farm-twin.json`.
