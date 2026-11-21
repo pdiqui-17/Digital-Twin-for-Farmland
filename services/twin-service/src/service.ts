@@ -10,6 +10,8 @@ export interface TwinServiceOptions {
   catalog?: ZoneCatalog;
   /** Ngưỡng khi không có catalog. */
   defaultThresholds?: Thresholds;
+  /** Tỉ lệ thời gian mô phỏng (simTimeScale), mặc định 1 = thời gian thật. */
+  timeScale?: number;
   onDrop?: (reason: DropReason) => void;
   onApplied?: (r: TwinReading) => void;
 }
@@ -47,7 +49,7 @@ export class TwinService extends EventEmitter {
         this.opts.onDrop?.("unknown_zone");
         return { applied: false, reason: "unknown_zone" as const };
       }
-      const res = applyReading(cur, r, now);
+      const res = applyReading(cur, r, now, this.opts.timeScale ?? 1);
       if (res.applied) this.opts.onApplied?.(r);
       else if (res.reason) this.opts.onDrop?.(res.reason);
       // Bản tin lỗi cảm biến vẫn đổi snapshot/faultySensors nên vẫn lưu.

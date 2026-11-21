@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { ValveCommandMessageSchema } from "@digital-twin/shared";
-import { DEFAULT_IRRIGATION as R, closeAck, decide, initialValveCtx, restorePendingClose, restoreValveCtx, stopAt, type PendingClose, type ValveCtx } from "../src/domain/valve";
+import { DEFAULT_IRRIGATION as R, closeAck, toRealSeconds, decide, initialValveCtx, restorePendingClose, restoreValveCtx, stopAt, type PendingClose, type ValveCtx } from "../src/domain/valve";
 import { at, zone } from "./helpers";
 
 const pending = (since = 0): ValveCtx => ({ phase: "pending", since: at(since).getTime(), commandId: "c1" });
@@ -133,5 +133,17 @@ describe("closeAck (theo dõi lệnh close)", () => {
     expect(restorePendingClose({ cmd: cmd("close", 0), status: "sent" })).toMatchObject({ commandId: "c1", timedOut: false });
     expect(restorePendingClose({ cmd: cmd("close", 0), status: "completed" })).toBeUndefined();
     expect(restorePendingClose({ cmd: cmd("open", 0), status: "sent" })).toBeUndefined();
+  });
+});
+
+describe("toRealSeconds (mốc giây ruộng -> giây thật)", () => {
+  it("chia theo tốc độ mô phỏng, làm tròn", () => {
+    expect(toRealSeconds(3600, 1)).toBe(3600);  // nông trại thật
+    expect(toRealSeconds(3600, 60)).toBe(60);   // simulator mặc định
+    expect(toRealSeconds(1800, 300)).toBe(6);   // tick 1 s
+    expect(toRealSeconds(600, 7)).toBe(86);
+  });
+  it("tối thiểu 1 s (durationSec phải là số nguyên dương)", () => {
+    expect(toRealSeconds(30, 300)).toBe(1);
   });
 });

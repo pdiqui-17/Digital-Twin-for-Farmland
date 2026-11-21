@@ -46,3 +46,17 @@ test('ZoneStateSchema accepts an empty twin', () => {
   };
   assert.equal(ZoneStateSchema.safeParse(z).success, true);
 });
+
+test('simTimeScale: suy từ biến của simulator, mặc định 60 lần', async () => {
+  const { simTimeScale } = await import('../index');
+  assert.equal(simTimeScale({}), 60);
+  assert.equal(simTimeScale({ SIMULATOR_TICK_INTERVAL_MS: '1000' }), 300);
+  assert.equal(simTimeScale({ SIMULATOR_TICK_INTERVAL_MS: '5000', SIMULATOR_PHYSICS_MINUTES_PER_TICK: '15' }), 180);
+});
+
+test('simTimeScale: SIM_TIME_SCALE được ưu tiên, giá trị hỏng thì bỏ qua', async () => {
+  const { simTimeScale } = await import('../index');
+  assert.equal(simTimeScale({ SIM_TIME_SCALE: '1', SIMULATOR_TICK_INTERVAL_MS: '1000' }), 1);
+  assert.equal(simTimeScale({ SIM_TIME_SCALE: 'abc' }), 60);
+  assert.equal(simTimeScale({ SIMULATOR_TICK_INTERVAL_MS: '0' }), 1);
+});

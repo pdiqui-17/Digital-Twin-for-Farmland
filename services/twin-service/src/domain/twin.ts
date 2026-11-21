@@ -82,7 +82,11 @@ function recomputeMetrics(state: ZoneState, now: Date): ZoneState {
 }
 
 /** Hàm thuần: áp một reading vào trạng thái zone (idempotent, chịu out-of-order). */
-export function applyReading(prev: ZoneState, r: TwinReading, now: Date): ApplyResult {
+/**
+ * @param timeScale số phút "ruộng" trong 1 phút thật (simTimeScale). `ts` của bản tin là giờ thật,
+ *   nên khoảng cách giữa hai bản tin được nhân lên trước khi cộng dồn nguy cơ nấm.
+ */
+export function applyReading(prev: ZoneState, r: TwinReading, now: Date, timeScale = 1): ApplyResult {
   const tsMs = Date.parse(r.ts);
   if (tsMs - now.getTime() > MAX_FUTURE_SKEW_MS) return { state: prev, applied: false, reason: "future_ts" };
 
@@ -106,7 +110,7 @@ export function applyReading(prev: ZoneState, r: TwinReading, now: Date): ApplyR
   next = recomputeMetrics({ ...next, lastDataAt: iso(newLast) }, now);
 
   if (prevLast !== null && tsMs > prevLast) {
-    const dtMin = Math.min(MAX_DT_MIN, (tsMs - prevLast) / 60_000);
+    const dtMin = Math.min(MAX_DT_MIN, ((tsMs - prevLast) / 60_000) * timeScale);
     const fav = fungalConditions(next.metrics.airHumidity, next.metrics.airTemperature);
     const accum = nextFungalAccum(prev.derived.fungalAccumMin, dtMin, fav);
     next = { ...next, derived: { ...next.derived, fungalAccumMin: accum, fungalRisk: fungalRisk(accum) } };

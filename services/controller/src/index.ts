@@ -1,6 +1,6 @@
 import express from "express";
 import client from "prom-client";
-import { config, databaseUrl, irrigation } from "./config";
+import { config, databaseUrl, irrigation, timeScale } from "./config";
 import { Controller } from "./controller";
 import { defaultRules } from "./domain/alerts";
 import { HttpTwinSource } from "./adapters/http";
@@ -63,6 +63,8 @@ async function main() {
   app.get("/healthz", (_q, r) => { r.json({ ok: true }); });
   app.get("/readyz", (_q, r) => { lastTickOk ? r.json({ ready: true }) : r.status(503).json({ ready: false }); });
   app.get("/metrics", async (_q, r) => { r.set("Content-Type", registry.contentType); r.send(await registry.metrics()); });
-  app.listen(config.port, () => console.log(`controller listening on :${config.port} (store=${config.store}, twin=${config.twinUrl}, mqtt=${config.mqttUrl ?? "log"})`));
+  app.listen(config.port, () => console.log(`controller listening on :${config.port} (store=${config.store}, twin=${config.twinUrl}, mqtt=${config.mqttUrl ?? "log"})`
+    + `\n  timeScale=${timeScale}x -> real seconds: tick=${config.tickSec} maxRun=${irrigation.maxRunSec} minRest=${irrigation.minRestSec}`
+    + ` alertCooldown=${config.alertCooldownSec} ackTimeout=${irrigation.ackTimeoutSec}`));
 }
 main().catch((e) => { console.error(e); process.exit(1); });

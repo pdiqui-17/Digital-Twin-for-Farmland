@@ -68,7 +68,8 @@ Metrics: `twin_readings_applied_total`, `twin_readings_dropped_total{reason}`, `
 | `MQTT_URL` (hoặc `MQTT_BROKER_URL`) | (không) | nếu đặt: subscribe trạng thái van |
 | `MQTT_USERNAME` `MQTT_PASSWORD` | | |
 | `FARM_ID` (hoặc `SIMULATOR_FARM_ID`) | farm-01 | |
-| `TWIN_STALE_AFTER_SEC` | 300 | quá hạn này không có dữ liệu thì sensor bị coi là cũ |
+| `TWIN_STALE_AFTER_SEC` | 300 | giây thật: quá hạn này không có dữ liệu thì sensor bị coi là cũ |
+| `SIM_TIME_SCALE` | (tự suy) | như controller; dùng để quy khoảng cách giữa hai bản tin ra phút ruộng khi cộng dồn nguy cơ nấm |
 | `ENABLE_DEV_INGEST` | 0 | bật `/ingest` (KHÔNG bật ở production) |
 
 Lỗi ghi DB khi xử lý bản tin Kafka được ném ra, không nuốt, để Kafka gửi lại (không mất dữ liệu).
@@ -135,16 +136,17 @@ Khởi động lại: controller nạp từ DB các cảnh báo đang mở và l
 | `KAFKA_BROKERS` | (không) | đặt thì publish lên topic `alerts` |
 | `TELEGRAM_TOKEN` `TELEGRAM_CHAT_ID` | | |
 | `AUTO_IRRIGATION` | 1 | `0` = chỉ cảnh báo, không tự tưới |
-| `CTRL_TICK_SEC` (hoặc `TICK_SEC`) | 10 | |
+| `SIM_TIME_SCALE` | (tự suy) | số giây ruộng trong 1 giây thật. Không đặt thì suy từ `SIMULATOR_TICK_INTERVAL_MS` và `SIMULATOR_PHYSICS_MINUTES_PER_TICK` (mặc định của simulator: 60). Nông trại thật: `1` |
+| `CTRL_TICK_SEC` | khoảng 10 phút ruộng, trong 1–10 s | giây thật (60 lần: 10 s; 300 lần: 2 s) |
 | `CTRL_STOP_FRACTION` | 0.5 | vị trí điểm đóng van trong khoảng tối ưu |
-| `CTRL_MAX_RUN_SEC` | 1800 | |
-| `CTRL_MIN_REST_SEC` | 3600 | |
-| `CTRL_ACK_TIMEOUT_SEC` | 30 | |
-| `CTRL_ALERT_COOLDOWN_SEC` | 600 | |
+| `CTRL_MAX_RUN_SEC` | 1800 | **giây ruộng**, tự chia theo tỉ lệ |
+| `CTRL_MIN_REST_SEC` | 3600 | **giây ruộng**, tự chia theo tỉ lệ |
+| `CTRL_ACK_TIMEOUT_SEC` | 30 | giây thật |
+| `CTRL_ALERT_COOLDOWN_SEC` | 600 | **giây ruộng**, tự chia theo tỉ lệ |
 | `CTRL_FAULT_CONFIRM_SEC` | 15 | lỗi cảm biến phải kéo dài chừng này mới mở `sensor_fault` (giờ thật, không chia theo tốc độ mô phỏng) |
 | `CTRL_UNKNOWN_CONFIRM_SEC` | 60 | mất dữ liệu phải kéo dài chừng này mới mở `zone_unknown` (giờ thật) |
 
-Các mốc `CTRL_*` hiện tính bằng giây thật. Simulator chạy nhanh `SIMULATOR_PHYSICS_MINUTES_PER_TICK × 60000 / SIMULATOR_TICK_INTERVAL_MS` lần (mặc định 60), nên khi demo phải tự chia `CTRL_TICK_SEC`, `CTRL_MAX_RUN_SEC`, `CTRL_MIN_REST_SEC`, `CTRL_ALERT_COOLDOWN_SEC` cho tỉ lệ này (xem mục 4). `CTRL_ACK_TIMEOUT_SEC` và `CTRL_*_CONFIRM_SEC` là độ trễ thật, không chia.
+**Tỉ lệ thời gian.** Simulator chạy nhanh `SIMULATOR_PHYSICS_MINUTES_PER_TICK × 60000 / SIMULATOR_TICK_INTERVAL_MS` lần (mặc định 60) trong khi `ts` của bản tin là giờ thật. Controller tự suy tỉ lệ này từ cùng file `.env` (hoặc `SIM_TIME_SCALE`) và chia các mốc tính bằng giây ruộng; log khởi động in ra giá trị thật đang dùng, ví dụ `timeScale=300x -> real seconds: tick=2 maxRun=6 minRest=12 ...`. `CTRL_ACK_TIMEOUT_SEC` và `CTRL_*_CONFIRM_SEC` là độ trễ thật, không chia. Lý do trong `commands.reason` (ví dụ `quá 6s`) ghi theo giây thật.
 
 ---
 
@@ -190,16 +192,11 @@ Không có hạ tầng: đặt `ENABLE_DEV_INGEST=1`, chạy `npm run dev:twin`,
 
 ### Kiểm thử vòng tưới (đã chạy đạt ngày 2026-11-21)
 
-Để thấy kết quả trong vài phút, cho simulator tick 1 giây (nhanh 300 lần) và chia các mốc controller theo tỉ lệ đó. Ví dụ trên PowerShell, đặt biến trong terminal trước khi chạy (biến môi trường thắng giá trị trong `.env`):
+Để thấy kết quả trong vài phút, đặt trong `.env`: `SIMULATOR_TICK_INTERVAL_MS=1000` (nhanh 300 lần) và `SIMULATOR_DROUGHT_MODE=true`, rồi chạy lại cả bốn service. Mọi service đọc cùng `.env` nên tự dùng chung tỉ lệ; không cần chỉnh `CTRL_*`.
 
-```powershell
-# terminal simulator
-$env:SIMULATOR_TICK_INTERVAL_MS="1000"; $env:SIMULATOR_DROUGHT_MODE="true"; npm run dev:simulator
-# terminal controller
-$env:CTRL_TICK_SEC="2"; $env:CTRL_MAX_RUN_SEC="60"; $env:CTRL_MIN_REST_SEC="12"; $env:CTRL_ALERT_COOLDOWN_SEC="12"; npm run dev:controller
-```
+Kết quả mong đợi: zone xuống dưới `dryBelow` thì mở `soil_dry`; van mở và được xác nhận trong vài giây; độ ẩm tăng; van đóng khi đạt điểm giữa khoảng tối ưu hoặc hết `CTRL_MAX_RUN_SEC` (mặc định 30 phút ruộng, ở 300 lần là 6 s thật); nghỉ ít nhất `CTRL_MIN_REST_SEC` (1 giờ ruộng) rồi mới tưới lại; cảnh báo đóng khi vượt `dryBelow + 4`. Mọi lệnh trong `commands` kết thúc ở `completed`.
 
-Kết quả mong đợi: mỗi zone khi xuống dưới `dryBelow` thì mở `soil_dry`, van mở và được xác nhận trong vài giây, độ ẩm tăng, van đóng quanh điểm giữa khoảng tối ưu (có thể lố 1–3 điểm ở tốc độ 300 lần), cảnh báo đóng khi vượt `dryBelow + 4`. Mọi lệnh trong `commands` kết thúc ở `completed`.
+Với mặc định, khi bật hạn hán một lần tưới 30 phút ruộng chỉ nâng độ ẩm vài điểm, nên zone dao động quanh ngưỡng khô thay vì lên tới điểm giữa. Muốn thấy van đóng vì đạt mục tiêu thì tăng `CTRL_MAX_RUN_SEC` (ví dụ `18000` = 5 giờ ruộng).
 
 API của simulator (Role A) để tạo tình huống:
 
@@ -214,8 +211,7 @@ API của simulator (Role A) để tạo tình huống:
 
 ## 5. Giới hạn đã biết
 
-- Các mốc `CTRL_*` phải chia tay theo tốc độ simulator (mục 2). Việc tiếp theo của B: tự suy tỉ lệ từ hai biến `SIMULATOR_*`.
-- `ts` của bản tin là giờ thật, nên ở tốc độ tăng: `fungalAccumMin` tích lũy chậm hơn thực tế (cảnh báo nấm khó bật) và `dt` khi fit analytics bị lệch theo tỉ lệ.
+- Analytics nhận mẫu theo giờ ruộng; dữ liệu lấy từ `sensor_readings` (giờ thật) phải nhân khoảng thời gian với tỉ lệ trước khi gọi `/model/calibrate`. Job làm việc này chưa có.
 - Lỗi `drift` của simulator không có cờ chất lượng riêng; chỉ phát hiện được khi giá trị vượt giới hạn vật lý (`out_of_range`).
 - Không có số đo mưa (xem mục 2 và 3).
 - C cần: image (`deploy/Dockerfile.service`), các biến môi trường ở trên, import `monitoring/grafana/farm-twin.json`.

@@ -3,7 +3,7 @@
 Phạm vi: `services/twin-service`, `services/controller`, `services/analytics`, phần twin trong `packages/shared` (`src/twin.ts`).
 Tài liệu này có hai phần: **Phần I** giải thích hệ thống hoạt động thế nào và đã làm được gì (cập nhật 21/11/2026); **Phần II** là kế hoạch gốc, giữ để đối chiếu. Chi tiết API và biến môi trường: `docs/api.md`.
 
-**Tóm tắt.** Role B biến dữ liệu cảm biến của Role A thành quyết định: giữ trạng thái số của từng zone, tự mở/đóng van tưới, cảnh báo khi có sự cố và dự đoán độ ẩm. Mốc MVP "hạn hán → cảnh báo → tự tưới → độ ẩm phục hồi" đã chạy đạt với simulator thật của Role A; 123/123 test toàn repo pass. Code nằm trên nhánh `b/twin-core`.
+**Tóm tắt.** Role B biến dữ liệu cảm biến của Role A thành quyết định: giữ trạng thái số của từng zone, tự mở/đóng van tưới, cảnh báo khi có sự cố và dự đoán độ ẩm. Mốc MVP "hạn hán → cảnh báo → tự tưới → độ ẩm phục hồi" đã chạy đạt với simulator thật của Role A; 128/128 test toàn repo pass. Code nằm trên nhánh `b/twin-core`.
 
 # Phần I. Cách hoạt động và kết quả
 
@@ -106,7 +106,7 @@ Hiện trạng: API và đánh giá chạy được trên dữ liệu tổng h�
 
 ## 6. Kết quả kiểm thử
 
-**Unit test**: 123/123 pass toàn repo; trong đó của B: twin 31, controller 46, analytics 29. Test controller có một "simulator mini" chạy cả vòng kín (khô → tưới → phục hồi), mất dữ liệu giữa lúc tưới, van không phản hồi, khởi động lại giữa lúc tưới.
+**Unit test**: 128/128 pass toàn repo; trong đó của B: twin 32, controller 48, analytics 29. Test controller có một "simulator mini" chạy cả vòng kín (khô → tưới → phục hồi), mất dữ liệu giữa lúc tưới, van không phản hồi, khởi động lại giữa lúc tưới.
 
 **Chạy thật với simulator của A** (21/11/2026, bật hạn hán, simulator tick 1 s ≈ nhanh 300 lần, khoảng 10 phút):
 
@@ -140,16 +140,29 @@ Hiện trạng: API và đánh giá chạy được trên dữ liệu tổng h�
 ## 8. Giới hạn và việc còn lại
 
 Giới hạn đã biết:
-- **Tốc độ mô phỏng.** Simulator mặc định nhanh 60 lần nhưng các mốc của controller tính bằng giây thật, nên đang phải chia tay (`CTRL_*` trong `.env.example`). Cùng nguyên nhân, nguy cơ nấm tích lũy chậm hơn thực tế và bước thời gian khi fit analytics bị lệch.
 - **Lỗi drift** (giá trị lệch dần) chỉ phát hiện được khi vượt giới hạn vật lý; processor không có cờ riêng.
 - **Mưa**: không có số đo, nên controller không chặn tưới khi mưa.
 
 Việc tiếp theo, theo thứ tự:
-1. Controller, twin và analytics tự suy tỉ lệ thời gian từ `SIMULATOR_TICK_INTERVAL_MS` và `SIMULATOR_PHYSICS_MINUTES_PER_TICK` (không cần A sửa gì).
-2. Fit mô hình analytics từ dữ liệu thật trong DB, có bảng MAE/RMSE cho báo cáo.
-3. Controller dùng dự đoán của analytics (yêu cầu tuần 6).
-4. Mở PR `b/twin-core` vào `main`.
-5. Báo cáo mục 5.4 và kịch bản demo.
+1. Fit mô hình analytics từ dữ liệu thật trong DB (quy đổi giờ thật sang giờ ruộng theo tỉ lệ), có bảng MAE/RMSE cho báo cáo.
+2. Controller dùng dự đoán của analytics (yêu cầu tuần 6).
+3. Mở PR `b/twin-core` vào `main`.
+4. Báo cáo mục 5.4 và kịch bản demo.
+
+Đã xong ngày 21/11/2026: tỉ lệ thời gian mô phỏng (mục 9).
+
+## 9. Thời gian ruộng và thời gian thật
+
+Simulator chạy nhanh hơn thời gian thật (mặc định 60 lần: 5 phút vật lý mỗi tick 5 giây), nhưng `ts` của mọi bản tin là giờ thật. Nếu không tính tỉ lệ, các mốc nghiệp vụ sẽ sai: ví dụ "nghỉ 1 giờ giữa hai lần tưới" thành 60 giờ ruộng, và nguy cơ nấm không bao giờ đạt mức cao.
+
+Twin và controller tự suy tỉ lệ từ chính cấu hình của simulator trong `.env` (`SIMULATOR_TICK_INTERVAL_MS`, `SIMULATOR_PHYSICS_MINUTES_PER_TICK`), hoặc `SIM_TIME_SCALE` nếu đặt (nông trại thật: 1). A không phải sửa gì.
+
+| Loại mốc | Ví dụ | Cách xử lý |
+|---|---|---|
+| Thời gian của ruộng/cây | thời lượng tưới tối đa, nghỉ giữa hai lần tưới, cooldown cảnh báo, phút tích lũy nguy cơ nấm | cấu hình bằng giây ruộng, tự quy đổi theo tỉ lệ |
+| Độ trễ của thiết bị/mạng | chờ van xác nhận, thời gian xác nhận lỗi cảm biến, dữ liệu cũ | giây thật, không đổi |
+
+Kiểm chứng ngày 21/11/2026 ở tốc độ 300 lần, không chỉnh tay mốc nào: controller tự dùng tưới tối đa 6 s thật (30 phút ruộng) và nghỉ 12 s thật (1 giờ ruộng); van đóng đúng lúc hết thời lượng, nghỉ đủ rồi mới tưới lại.
 
 ---
 

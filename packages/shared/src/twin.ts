@@ -8,6 +8,28 @@ import { AlertEventSchema, DataQualitySchema, SensorTypeSchema, type DataQuality
 
 export const clamp = (x: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, x));
 
+// ============================================================================
+// Tỉ lệ thời gian mô phỏng
+// ============================================================================
+
+/** Mặc định của simulator (Role A): mỗi tick 5 s thật chạy 5 phút vật lý, tức nhanh 60 lần. */
+export const SIMULATOR_DEFAULT_TICK_MS = 5000;
+export const SIMULATOR_DEFAULT_PHYSICS_MINUTES = 5;
+
+/**
+ * Số giây "ruộng" trôi qua trong 1 giây thật.
+ * Ưu tiên SIM_TIME_SCALE (nông trại thật: 1); nếu không thì suy từ chính biến cấu hình của simulator,
+ * dùng mặc định của simulator khi biến không được đặt. Giá trị không hợp lệ thì trả 1.
+ */
+export function simTimeScale(env: Record<string, string | undefined>): number {
+  const explicit = Number(env.SIM_TIME_SCALE);
+  if (env.SIM_TIME_SCALE && Number.isFinite(explicit) && explicit > 0) return explicit;
+  const tickMs = Number(env.SIMULATOR_TICK_INTERVAL_MS || SIMULATOR_DEFAULT_TICK_MS);
+  const physicsMin = Number(env.SIMULATOR_PHYSICS_MINUTES_PER_TICK || SIMULATOR_DEFAULT_PHYSICS_MINUTES);
+  const scale = (physicsMin * 60_000) / tickMs;
+  return Number.isFinite(scale) && scale > 0 ? scale : 1;
+}
+
 /** Chất lượng dùng được cho giá trị nghiệp vụ (tài liệu bàn giao Role A, mục 3.1). */
 export const USABLE_QUALITIES: readonly DataQuality[] = ['ok', 'noisy_smoothed'];
 export const isUsableQuality = (q: DataQuality): boolean => USABLE_QUALITIES.includes(q);

@@ -17,6 +17,13 @@ export const DEFAULT_IRRIGATION: IrrigationRules = {
   stopFraction: 0.5, maxRunSec: 1800, minRestSec: 3600, ackTimeoutSec: 30,
 };
 
+/**
+ * Đổi một mốc tính bằng giây "ruộng" sang giây thật mà máy trạng thái so sánh.
+ * Làm tròn, tối thiểu 1 s (durationSec gửi simulator phải là số nguyên dương).
+ */
+export const toRealSeconds = (fieldSec: number, timeScale: number): number =>
+  Math.max(1, Math.round(fieldSec / timeScale));
+
 export const openBelow = (z: ZoneState) => z.thresholds.dryBelow;
 export const stopAt = (z: ZoneState, r: IrrigationRules) =>
   z.thresholds.optimalLow + r.stopFraction * (z.thresholds.optimalHigh - z.thresholds.optimalLow);

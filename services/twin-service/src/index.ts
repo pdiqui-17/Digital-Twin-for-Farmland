@@ -30,6 +30,7 @@ async function main() {
     defaultFarmId: config.farmId,
     catalog,
     defaultThresholds: { ...DEFAULT_THRESHOLDS, staleAfterSec: config.staleAfterSec },
+    timeScale: config.timeScale,
     onApplied: (r) => {
       m.applied.inc();
       m.ingestLag.set(Math.max(0, (Date.now() - Date.parse(r.ts)) / 1000));
@@ -51,6 +52,6 @@ async function main() {
     startMqttValveState(service, { url: config.mqttUrl, farmId: config.farmId, username: config.mqttUsername, password: config.mqttPassword });
   }
   const app = createApp({ service, history, registry, ready: () => ready, devIngest: config.devIngest });
-  app.listen(config.port, () => console.log(`twin-service listening on :${config.port} (store=${config.store}, ingest=${config.ingest})`));
+  app.listen(config.port, () => console.log(`twin-service listening on :${config.port} (store=${config.store}, ingest=${config.ingest}, timeScale=${config.timeScale}x)`));
 }
 main().catch((e) => { console.error(e); process.exit(1); });

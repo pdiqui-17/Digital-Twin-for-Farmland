@@ -94,6 +94,21 @@ describe("applyReading", () => {
     }
     expect(s.derived.fungalRisk).toBeLessThan(high);
   });
+
+  it("simulator nhanh 60 lần: 6 phút thật ẩm liên tục = 6 giờ ruộng, nguy cơ nấm đạt tối đa", () => {
+    const sec = (s: number) => new Date(t0 + s * 1000);
+    const r = (s: number, sensorId: string, type: "air_humidity" | "air_temperature", value: number): TwinReading =>
+      ({ sensorId, zoneId: "z1", type, value, unit: type === "air_humidity" ? "percent" : "celsius", quality: "ok", ts: sec(s).toISOString() });
+    let real = zone(), scaled = zone();
+    for (let s = 0; s <= 6 * 60; s += 5) { // bản tin mỗi 5 s thật, trong 6 phút thật
+      for (const rd of [r(s, "h", "air_humidity", 92), r(s, "t", "air_temperature", 22)]) {
+        real = applyReading(real, rd, sec(s)).state;
+        scaled = applyReading(scaled, rd, sec(s), 60).state;
+      }
+    }
+    expect(real.derived.fungalRisk).toBeLessThan(0.05);   // không tính tỉ lệ: chỉ ~6 phút
+    expect(scaled.derived.fungalRisk).toBeCloseTo(1, 2);  // có tỉ lệ: ~360 phút ruộng
+  });
 });
 
 describe("refresh / stale", () => {

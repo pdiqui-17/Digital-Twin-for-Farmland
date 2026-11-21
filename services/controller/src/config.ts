@@ -1,6 +1,7 @@
 import path from "node:path";
 import dotenv from "dotenv";
-import { DEFAULT_IRRIGATION, type IrrigationRules } from "./domain/valve";
+import { simTimeScale } from "@digital-twin/shared";
+import { DEFAULT_IRRIGATION, toRealSeconds, type IrrigationRules } from "./domain/valve";
 import { DEFAULT_CONFIRM } from "./domain/alerts";
 
 // Dùng chung file .env ở gốc repo với các service của Role A.
@@ -17,11 +18,19 @@ export function databaseUrl(): string {
   return `postgres://${u}:${p}@${env.POSTGRES_HOST ?? "localhost"}:${env.POSTGRES_PORT ?? 5432}/${env.POSTGRES_DB ?? "digital_twin_farm"}`;
 }
 
-/** Mốc thời gian chỉnh được: khi simulator chạy nhanh (SIMULATOR_PHYSICS_MINUTES_PER_TICK) có thể rút ngắn. */
+/** Số giây ruộng trong 1 giây thật (SIM_TIME_SCALE hoặc suy từ SIMULATOR_*; nông trại thật: 1). */
+export const timeScale = simTimeScale(env);
+/** Mốc tính bằng giây ruộng -> giây thật. */
+const field = (v: string | undefined, d: number) => toRealSeconds(num(v, d), timeScale);
+
+/**
+ * CTRL_MAX_RUN_SEC, CTRL_MIN_REST_SEC: giây ruộng, tự chia theo tốc độ mô phỏng.
+ * CTRL_ACK_TIMEOUT_SEC: giây thật (độ trễ mạng/thiết bị), không chia.
+ */
 export const irrigation: IrrigationRules = {
   stopFraction: num(env.CTRL_STOP_FRACTION, DEFAULT_IRRIGATION.stopFraction),
-  maxRunSec: num(env.CTRL_MAX_RUN_SEC, DEFAULT_IRRIGATION.maxRunSec),
-  minRestSec: num(env.CTRL_MIN_REST_SEC, DEFAULT_IRRIGATION.minRestSec),
+  maxRunSec: field(env.CTRL_MAX_RUN_SEC, DEFAULT_IRRIGATION.maxRunSec),
+  minRestSec: field(env.CTRL_MIN_REST_SEC, DEFAULT_IRRIGATION.minRestSec),
   ackTimeoutSec: num(env.CTRL_ACK_TIMEOUT_SEC, DEFAULT_IRRIGATION.ackTimeoutSec),
 };
 
@@ -36,8 +45,10 @@ export const config = {
   kafkaBrokers: env.KAFKA_BROKERS,
   telegramToken: env.TELEGRAM_TOKEN,
   telegramChatId: env.TELEGRAM_CHAT_ID,
-  tickSec: num(env.CTRL_TICK_SEC ?? env.TICK_SEC, 10),
-  alertCooldownSec: num(env.CTRL_ALERT_COOLDOWN_SEC, 600),
+  /** Giây thật. Mặc định khoảng 10 phút ruộng, trong khoảng 1-10 s (60 lần: 10 s; 300 lần: 2 s). */
+  tickSec: num(env.CTRL_TICK_SEC ?? env.TICK_SEC, Math.min(10, toRealSeconds(600, timeScale))),
+  /** Giây ruộng, tự chia theo tốc độ mô phỏng. */
+  alertCooldownSec: field(env.CTRL_ALERT_COOLDOWN_SEC, 600),
   /** Giây thật: lỗi cảm biến / mất dữ liệu phải kéo dài chừng này mới mở cảnh báo (không chia theo tốc độ mô phỏng). */
   confirm: {
     sensorFaultSec: num(env.CTRL_FAULT_CONFIRM_SEC, DEFAULT_CONFIRM.sensorFaultSec),

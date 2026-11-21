@@ -1,5 +1,6 @@
 import path from "node:path";
 import dotenv from "dotenv";
+import { simTimeScale } from "@digital-twin/shared";
 
 // Dùng chung file .env ở gốc repo với các service của Role A.
 dotenv.config({ path: path.resolve(__dirname, "../../../.env") });
@@ -26,6 +27,9 @@ export const config = {
   mqttUrl: env.MQTT_URL ?? env.MQTT_BROKER_URL,
   mqttUsername: env.MQTT_USERNAME,
   mqttPassword: env.MQTT_PASSWORD,
+  /** Giây thật: độ trễ dữ liệu, không chia theo tốc độ mô phỏng. */
   staleAfterSec: Number(env.TWIN_STALE_AFTER_SEC ?? 300),
+  /** Số giây ruộng trong 1 giây thật (SIM_TIME_SCALE hoặc suy từ SIMULATOR_*). */
+  timeScale: simTimeScale(env),
   devIngest: env.ENABLE_DEV_INGEST === "1",
 };
