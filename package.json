@@ -27,7 +27,8 @@
     "dev:controller": "npm run build:shared && npm run dev --workspace=@digital-twin/controller",
     "dev:analytics": "npm run build:shared && npm run dev --workspace=@digital-twin/analytics",
     "eval": "npm run build:shared && tsx services/analytics/src/evalCli.ts",
-    "fake-feed": "tsx scripts/fake-feed.ts"
+    "fake-feed": "tsx scripts/fake-feed.ts",
+    "export-samples": "npm run build:shared && npm run export-samples --workspace=@digital-twin/analytics --"
   },
   "devDependencies": {
     "@types/express": "^4.17.21",

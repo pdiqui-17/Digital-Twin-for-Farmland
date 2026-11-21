@@ -3,7 +3,7 @@
 Phạm vi: `services/twin-service`, `services/controller`, `services/analytics`, phần twin trong `packages/shared` (`src/twin.ts`).
 Tài liệu này có hai phần: **Phần I** giải thích hệ thống hoạt động thế nào và đã làm được gì (cập nhật 21/11/2026); **Phần II** là kế hoạch gốc, giữ để đối chiếu. Chi tiết API và biến môi trường: `docs/api.md`.
 
-**Tóm tắt.** Role B biến dữ liệu cảm biến của Role A thành quyết định: giữ trạng thái số của từng zone, tự mở/đóng van tưới, cảnh báo khi có sự cố và dự đoán độ ẩm. Mốc MVP "hạn hán → cảnh báo → tự tưới → độ ẩm phục hồi" đã chạy đạt với simulator thật của Role A; 128/128 test toàn repo pass. Code nằm trên nhánh `b/twin-core`.
+**Tóm tắt.** Role B biến dữ liệu cảm biến của Role A thành quyết định: giữ trạng thái số của từng zone, tự mở/đóng van tưới, cảnh báo khi có sự cố và dự đoán độ ẩm. Mốc MVP "hạn hán → cảnh báo → tự tưới → độ ẩm phục hồi" đã chạy đạt với simulator thật của Role A; 136/136 test toàn repo pass. Code nằm trên nhánh `b/twin-core`.
 
 # Phần I. Cách hoạt động và kết quả
 
@@ -102,11 +102,28 @@ Mô hình cân bằng nước đơn giản, cố ý **không** chép công thứ
 - `POST /whatif`: so sánh nhiều lịch tưới; với mỗi lịch trả độ ẩm thấp nhất, số giờ dưới khoảng tối ưu, số giờ dưới điểm héo, tổng nước, và chọn lịch tốt nhất.
 - `npm run eval`: MAE/RMSE của mô hình so với hai baseline (giữ nguyên giá trị, ngoại suy tuyến tính), chia train/test theo thời gian.
 
-Hiện trạng: API và đánh giá chạy được trên dữ liệu tổng hợp; **chưa** fit bằng dữ liệu thật trong DB, và controller **chưa** dùng dự đoán.
+- `npm run export-samples`: lấy dữ liệu thật từ DB (`sensor_readings` + `commands`), quy giờ thật sang giờ ruộng, gom thành bước 1 giờ ruộng, ra CSV cho `eval` và `/model/calibrate`.
+
+**Kết quả fit trên dữ liệu thật** (21/11/2026: simulator bật hạn hán, nhanh 600 lần, 9 phút thật ≈ 92 giờ ruộng mỗi zone, 67 lần tưới; fit 63 giờ đầu, đánh giá 28 giờ sau). MAE độ ẩm (%VWC), mô hình so với baseline "giữ nguyên giá trị":
+
+| Zone | Hiệu quả tưới (%/giờ) | Bay hơi (%/giờ/°C) | 1 giờ tới | 3 giờ tới | 6 giờ tới |
+|---|---|---|---|---|---|
+| A | 4,4 | 0,019 | **0,59** / 0,77 | **1,22** / 1,42 | 2,06 / 2,05 |
+| B | 5,9 | 0,036 | **1,04** / 1,21 | 2,42 / 1,96 | 4,59 / 3,31 |
+| C | 6,0 | 0,023 | **0,62** / 0,72 | **1,34** / 1,43 | 2,46 / 1,96 |
+| D | 4,1 | 0,019 | **0,40** / 0,59 | **1,04** / 1,32 | 1,97 / 1,55 |
+
+Đọc kết quả:
+- Ở tầm **1–3 giờ**, mô hình tốt hơn baseline ở 7/8 trường hợp (giảm sai số 10–30%); đây là tầm controller cần để quyết định tưới.
+- Ở tầm **6 giờ trở lên**, baseline "giữ nguyên" thắng. Lý do: controller giữ độ ẩm dao động quanh ngưỡng khô, nên "không đổi" tình cờ là dự đoán tốt; còn mô hình chỉ có nhiệt độ, thiếu nắng và độ ẩm không khí (simulator dùng cả hai cho bay hơi), nên sai số cộng dồn theo thời gian.
+- Bay hơi nền `evapBase` bị ép về 0 (ước lượng âm), toàn bộ bay hơi được giải thích qua nhiệt độ. Hệ số mưa không fit (dữ liệu hạn hán).
+- Mỗi zone chỉ có 28 giờ test (10–21 điểm mỗi tầm); cần chạy lâu hơn để số liệu chắc chắn hơn.
+
+Hiện trạng: controller **chưa** dùng dự đoán.
 
 ## 6. Kết quả kiểm thử
 
-**Unit test**: 128/128 pass toàn repo; trong đó của B: twin 32, controller 48, analytics 29. Test controller có một "simulator mini" chạy cả vòng kín (khô → tưới → phục hồi), mất dữ liệu giữa lúc tưới, van không phản hồi, khởi động lại giữa lúc tưới.
+**Unit test**: 136/136 pass toàn repo; trong đó của B: twin 32, controller 48, analytics 37. Test controller có một "simulator mini" chạy cả vòng kín (khô → tưới → phục hồi), mất dữ liệu giữa lúc tưới, van không phản hồi, khởi động lại giữa lúc tưới.
 
 **Chạy thật với simulator của A** (21/11/2026, bật hạn hán, simulator tick 1 s ≈ nhanh 300 lần, khoảng 10 phút):
 
@@ -144,12 +161,12 @@ Giới hạn đã biết:
 - **Mưa**: không có số đo, nên controller không chặn tưới khi mưa.
 
 Việc tiếp theo, theo thứ tự:
-1. Fit mô hình analytics từ dữ liệu thật trong DB (quy đổi giờ thật sang giờ ruộng theo tỉ lệ), có bảng MAE/RMSE cho báo cáo.
-2. Controller dùng dự đoán của analytics (yêu cầu tuần 6).
-3. Mở PR `b/twin-core` vào `main`.
-4. Báo cáo mục 5.4 và kịch bản demo.
+1. Controller dùng dự đoán của analytics (yêu cầu tuần 6), ở tầm 1–3 giờ nơi mô hình đáng tin.
+2. Mở PR `b/twin-core` vào `main`.
+3. Báo cáo mục 5.4 và kịch bản demo.
+4. (Tùy chọn) Chạy thu dữ liệu lâu hơn nếu báo cáo cần số liệu fit chắc hơn.
 
-Đã xong ngày 21/11/2026: tỉ lệ thời gian mô phỏng (mục 9).
+Đã xong ngày 21/11/2026: tỉ lệ thời gian mô phỏng (mục 9); fit mô hình từ dữ liệu thật (mục 5).
 
 ## 9. Thời gian ruộng và thời gian thật
 

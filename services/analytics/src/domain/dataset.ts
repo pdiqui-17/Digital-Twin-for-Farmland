@@ -17,12 +17,16 @@ export function resample(rows: Sample[], stepMin: number): Sample[] {
   return out;
 }
 
-/** CSV: ts,moisture,temp,rain,open  (dòng đầu là header). Bỏ qua dòng hỏng. */
+/** CSV: ts,moisture,temp,rain,open  (dòng đầu là header; open 0..1). Bỏ qua dòng hỏng. */
 export function parseCsv(text: string): Sample[] {
   const out: Sample[] = [];
   for (const line of text.trim().split(/\r?\n/).slice(1)) {
     const [ts, m, t, r, o] = line.split(",");
-    const s: Sample = { tsMs: Date.parse(ts ?? ""), moisture: Number(m), temp: Number(t), rain: Number(r), open: Number(o) ? 1 : 0 };
+    const open = Number(o);
+    const s: Sample = {
+      tsMs: Date.parse(ts ?? ""), moisture: Number(m), temp: Number(t), rain: Number(r),
+      open: Number.isFinite(open) ? Math.min(1, Math.max(0, open)) : 0,
+    };
     if ([s.tsMs, s.moisture, s.temp, s.rain].every(Number.isFinite)) out.push(s);
   }
   return out;

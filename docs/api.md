@@ -157,7 +157,7 @@ Khởi động lại: controller nạp từ DB các cảnh báo đang mở và l
 | POST | `/forecast` | `{moisture, horizonHours?=6 (1-48), irrigation?: [{startHour,durationHours}], lat?, lon?}` | Quỹ đạo độ ẩm theo giờ |
 | POST | `/whatif` | `{moisture, horizonHours?=24 (1-72), schedules: [{name, windows}], lat?, lon?}` | So sánh lịch tưới; trả `scenarios[]` và `best` |
 | GET | `/model` | | Hệ số hiện tại và kết quả fit |
-| POST | `/model/calibrate` | `{samples: [{tsMs, moisture, temp, rain, open}]}` | Fit lại hệ số từ lịch sử (>= 10 mẫu) |
+| POST | `/model/calibrate` | `{samples: [{tsMs, moisture, temp, rain, open}]}` | Fit lại hệ số từ lịch sử (>= 10 mẫu). Mẫu theo **giờ ruộng**, bước 1 giờ; `open` là phần thời gian van mở trong bước (0..1) |
 | GET | `/healthz` `/readyz` `/metrics` | | Metric: `analytics_requests_total` |
 
 | Biến môi trường | Mặc định | Ý nghĩa |
@@ -168,8 +168,20 @@ Khởi động lại: controller nạp từ DB các cảnh báo đang mở và l
 
 Lỗi nguồn thời tiết trả 502. Hệ số mặc định chỉ là giá trị khởi tạo: PHẢI chạy `/model/calibrate` bằng dữ liệu thật trước khi tin dự đoán.
 
+### Fit mô hình từ dữ liệu trong DB
+
+```bash
+# 1. Xuất mẫu giờ ruộng của một zone (đọc sensor_readings + commands), chỉ lấy khoảng đang bật hạn hán
+npm run export-samples -- --zone zone-B --from 2026-11-21T08:23:15Z --to 2026-11-21T08:32:30Z --scale 600 > zone-B.csv
+# 2. Fit trên 70% đầu, đánh giá MAE/RMSE trên 30% sau so với baseline (tham số 2 = khoảng ẩm tối ưu của zone)
+npm run eval -- zone-B.csv 55,80
+```
+
+`export-samples` quy giờ thật sang giờ ruộng theo `--scale` (mặc định suy từ `.env` hiện tại; phải là tỉ lệ LÚC thu dữ liệu), gom bản tin chất lượng tốt thành bước 1 giờ ruộng (trung bình độ ẩm đất và nhiệt độ), tính khoảng van mở từ bảng `commands` (từ lúc van xác nhận tới lệnh đóng hoặc hết `durationSec`), và ghi `rain = 0`. Cùng file CSV có thể gửi cho `/model/calibrate`.
+
 Lưu ý về dữ liệu:
 - Pipeline không có số đo mưa. Lấy mẫu fit trong lúc simulator bật hạn hán (khi đó mưa = 0 là đúng thật); hệ số mưa `rainGain` vì vậy không được fit.
+- Không gộp dữ liệu của các lần chạy có tốc độ simulator khác nhau vào một lần xuất.
 - `/forecast` lấy dự báo thật của hôm nay, còn simulator phát lại thời tiết 8–15/5/2025 với tốc độ tăng. Khi demo dùng `WEATHER=constant` để dự đoán không lệch với nông trại ảo.
 
 ---
@@ -211,7 +223,6 @@ API của simulator (Role A) để tạo tình huống:
 
 ## 5. Giới hạn đã biết
 
-- Analytics nhận mẫu theo giờ ruộng; dữ liệu lấy từ `sensor_readings` (giờ thật) phải nhân khoảng thời gian với tỉ lệ trước khi gọi `/model/calibrate`. Job làm việc này chưa có.
 - Lỗi `drift` của simulator không có cờ chất lượng riêng; chỉ phát hiện được khi giá trị vượt giới hạn vật lý (`out_of_range`).
 - Không có số đo mưa (xem mục 2 và 3).
 - C cần: image (`deploy/Dockerfile.service`), các biến môi trường ở trên, import `monitoring/grafana/farm-twin.json`.

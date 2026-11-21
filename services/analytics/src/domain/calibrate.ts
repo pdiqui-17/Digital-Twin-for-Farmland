@@ -6,7 +6,8 @@ export interface Sample {
   moisture: number;
   temp: number;
   rain: number;     // mm/h
-  open: 0 | 1;
+  /** Phần thời gian van mở trong bước, 0..1 (dữ liệu từ lịch tưới hoặc DB). */
+  open: number;
 }
 
 export interface CalibrationResult {
