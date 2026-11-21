@@ -70,11 +70,25 @@ function acked(zone: ZoneState, ctx: ValveCtx): boolean {
   return !!zone.valve.ts && Date.parse(zone.valve.ts) >= ctx.since;
 }
 
+/** Độ ẩm analytics dự đoán sau `hours` giờ ruộng nếu không tưới (chỉ dùng khi hệ số đã calibrate). */
+export interface Prediction { moisture: number; hours: number; }
+
+/**
+ * Có nên hỏi analytics cho zone này không: chỉ khi luật dự đoán có thể đổi quyết định
+ * (van nghỉ và đang đóng, có dữ liệu, chưa khô) và có nhiệt độ để dự đoán khớp với ruộng đang chạy.
+ */
+export function needsPrediction(zone: ZoneState, ctx: ValveCtx): boolean {
+  const m = zone.metrics.soilMoisture;
+  return ctx.phase === "idle" && zone.valve.state !== "open" && zone.status !== "unknown"
+    && m !== null && m >= openBelow(zone) && zone.metrics.airTemperature !== null;
+}
+
 /**
  * Máy trạng thái van: idle -> pending -> watering -> cooldown -> idle.
+ * Ở idle: mở khi độ ẩm đã dưới ngưỡng khô, hoặc khi `prediction` cho thấy sắp xuống dưới (tưới sớm).
  * An toàn: thiếu dữ liệu thì không mở; đang tưới mà mất dữ liệu thì đóng; van không phản hồi thì gửi lệnh đóng.
  */
-export function decide(zone: ZoneState, ctx: ValveCtx, rules: IrrigationRules, now: Date): ValveDecision {
+export function decide(zone: ZoneState, ctx: ValveCtx, rules: IrrigationRules, now: Date, prediction?: Prediction | null): ValveDecision {
   const t = now.getTime();
   const m = zone.metrics.soilMoisture;
   const elapsed = (t - ctx.since) / 1000;
@@ -88,6 +102,11 @@ export function decide(zone: ZoneState, ctx: ValveCtx, rules: IrrigationRules, n
       if (zone.valve.state === "open") return keep(); // van đang mở do nguồn khác
       if (m < openBelow(zone)) {
         const cmd = mkCmd(zone, "open", `độ ẩm ${m.toFixed(1)}% < ${openBelow(zone)}%`, now, rules.maxRunSec);
+        return to("pending", cmd, "open_issued", cmd.commandId);
+      }
+      if (prediction && zone.status !== "unknown" && prediction.moisture < openBelow(zone)) {
+        const reason = `dự đoán ${prediction.hours}h: ${prediction.moisture.toFixed(1)}% < ${openBelow(zone)}% (hiện ${m.toFixed(1)}%)`;
+        const cmd = mkCmd(zone, "open", reason, now, rules.maxRunSec);
         return to("pending", cmd, "open_issued", cmd.commandId);
       }
       return keep();

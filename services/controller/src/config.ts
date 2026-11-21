@@ -55,4 +55,9 @@ export const config = {
     zoneUnknownSec: num(env.CTRL_UNKNOWN_CONFIRM_SEC, DEFAULT_CONFIRM.zoneUnknownSec),
   },
   autoIrrigation: env.AUTO_IRRIGATION !== "0",
+  /** Luật tưới sớm theo dự đoán của analytics. Analytics tắt/lỗi/chưa calibrate thì tự quay về luật theo ngưỡng. */
+  predict: env.CTRL_PREDICT !== "0",
+  /** Tầm dự đoán, giờ ruộng (mô hình tin được ở 1-3 giờ). */
+  predictHours: num(env.CTRL_PREDICT_HOURS, 1),
+  analyticsUrl: env.ANALYTICS_URL ?? "http://localhost:3012",
 };

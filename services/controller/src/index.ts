@@ -3,7 +3,7 @@ import client from "prom-client";
 import { config, databaseUrl, irrigation, timeScale } from "./config";
 import { Controller } from "./controller";
 import { defaultRules } from "./domain/alerts";
-import { HttpTwinSource } from "./adapters/http";
+import { HttpForecastSource, HttpTwinSource } from "./adapters/http";
 import { LogCommandPublisher, MqttCommandPublisher } from "./adapters/mqtt";
 import { ConsoleNotifier, TelegramNotifier } from "./adapters/notifier";
 import { MemoryAlertStore, MemoryCommandStore } from "./adapters/memory";
@@ -14,6 +14,7 @@ client.collectDefaultMetrics({ register: registry });
 const cmdCounter = new client.Counter({ name: "controller_commands_total", help: "Lệnh van đã gửi", labelNames: ["action"], registers: [registry] });
 const alertCounter = new client.Counter({ name: "controller_alerts_total", help: "Sự kiện cảnh báo", labelNames: ["rule", "state"], registers: [registry] });
 const tickErrors = new client.Counter({ name: "controller_tick_errors_total", help: "Tick lỗi", registers: [registry] });
+const predictions = new client.Counter({ name: "controller_predictions_total", help: "Lần hỏi dự đoán analytics: ok | none (chưa calibrate) | error", labelNames: ["result"], registers: [registry] });
 
 async function main() {
   let commandStore: CommandStore = new MemoryCommandStore();
@@ -44,6 +45,9 @@ async function main() {
     commandPublisher, commandStore, alertStore, alertPublisher, notifier,
     irrigation, alertCooldownSec: config.alertCooldownSec, autoIrrigation: config.autoIrrigation,
     alertRules: defaultRules(config.confirm),
+    forecast: config.predict ? new HttpForecastSource(config.analyticsUrl) : undefined,
+    predictHours: config.predictHours,
+    onPrediction: (result) => predictions.inc({ result }),
   });
   await controller.restore();
 
@@ -65,6 +69,7 @@ async function main() {
   app.get("/metrics", async (_q, r) => { r.set("Content-Type", registry.contentType); r.send(await registry.metrics()); });
   app.listen(config.port, () => console.log(`controller listening on :${config.port} (store=${config.store}, twin=${config.twinUrl}, mqtt=${config.mqttUrl ?? "log"})`
     + `\n  timeScale=${timeScale}x -> real seconds: tick=${config.tickSec} maxRun=${irrigation.maxRunSec} minRest=${irrigation.minRestSec}`
-    + ` alertCooldown=${config.alertCooldownSec} ackTimeout=${irrigation.ackTimeoutSec}`));
+    + ` alertCooldown=${config.alertCooldownSec} ackTimeout=${irrigation.ackTimeoutSec}`
+    + `\n  predict=${config.predict ? `on (${config.predictHours}h, ${config.analyticsUrl})` : "off"}`));
 }
 main().catch((e) => { console.error(e); process.exit(1); });

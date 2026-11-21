@@ -11,14 +11,14 @@ export const TH = deriveThresholds(45, 70);
 /** Dựng ZoneState nhanh cho test bằng cách ghi đè metrics. */
 export function zone(over: {
   moisture?: number | null; valve?: "open" | "closed" | "unknown"; valveTs?: Date; lastCommandId?: string;
-  fungal?: number; faulty?: string[];
+  fungal?: number; faulty?: string[]; temp?: number | null;
 } = {}): ZoneState {
   const base = initZone("zone-A", "farm-01", at(0), TH);
   const m = over.moisture === undefined ? 50 : over.moisture;
   return {
     ...base,
     lastDataAt: m === null ? null : at(0).toISOString(),
-    metrics: { ...base.metrics, soilMoisture: m },
+    metrics: { ...base.metrics, soilMoisture: m, airTemperature: over.temp === undefined ? 25 : over.temp },
     derived: { waterStress: null, fungalRisk: over.fungal ?? 0, fungalAccumMin: 0 },
     faultySensors: over.faulty ?? [],
     valve: { state: over.valve ?? "closed", ts: over.valveTs ? over.valveTs.toISOString() : null, lastCommandId: over.lastCommandId },

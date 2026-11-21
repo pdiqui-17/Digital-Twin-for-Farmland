@@ -3,7 +3,7 @@
 Phạm vi: `services/twin-service`, `services/controller`, `services/analytics`, phần twin trong `packages/shared` (`src/twin.ts`).
 Tài liệu này có hai phần: **Phần I** giải thích hệ thống hoạt động thế nào và đã làm được gì (cập nhật 21/11/2026); **Phần II** là kế hoạch gốc, giữ để đối chiếu. Chi tiết API và biến môi trường: `docs/api.md`.
 
-**Tóm tắt.** Role B biến dữ liệu cảm biến của Role A thành quyết định: giữ trạng thái số của từng zone, tự mở/đóng van tưới, cảnh báo khi có sự cố và dự đoán độ ẩm. Mốc MVP "hạn hán → cảnh báo → tự tưới → độ ẩm phục hồi" đã chạy đạt với simulator thật của Role A; 136/136 test toàn repo pass. Code nằm trên nhánh `b/twin-core`.
+**Tóm tắt.** Role B biến dữ liệu cảm biến của Role A thành quyết định: giữ trạng thái số của từng zone, tự mở/đóng van tưới, cảnh báo khi có sự cố và dự đoán độ ẩm. Mốc MVP "hạn hán → cảnh báo → tự tưới → độ ẩm phục hồi" đã chạy đạt với simulator thật của Role A; 152/152 test toàn repo pass. Code nằm trên nhánh `b/twin-core`.
 
 # Phần I. Cách hoạt động và kết quả
 
@@ -57,7 +57,7 @@ Mỗi `CTRL_TICK_SEC` giây controller đọc trạng thái mọi zone từ twin
 
 | Pha | Chuyển sang pha sau khi |
 |---|---|
-| `idle` (chờ) | độ ẩm < ngưỡng khô → gửi lệnh `open` (kèm thời lượng tối đa) |
+| `idle` (chờ) | độ ẩm < ngưỡng khô, **hoặc** analytics dự đoán sau 1 giờ ruộng sẽ < ngưỡng khô → gửi lệnh `open` (kèm thời lượng tối đa) |
 | `pending` (chờ van xác nhận) | van báo đã mở đúng lệnh → `watering`; quá `CTRL_ACK_TIMEOUT_SEC` → gửi `close` an toàn, cảnh báo, sang `cooldown` |
 | `watering` (đang tưới) | độ ẩm đạt điểm giữa khoảng tối ưu, hoặc quá thời lượng tối đa, hoặc mất dữ liệu → gửi `close`, sang `cooldown` |
 | `cooldown` (nghỉ) | đủ `CTRL_MIN_REST_SEC` → `idle` |
@@ -70,6 +70,7 @@ Cơ chế an toàn:
 - Luôn nghỉ giữa hai lần tưới, không tưới liên tục.
 - Mỗi lệnh được ghi vào bảng `commands` *trước* khi gửi, có lý do (ví dụ "độ ẩm 53.8% < 55%"), và được theo dõi tới cuối: lệnh mở `sent → acknowledged → completed`, lệnh đóng `sent → completed`.
 - Khởi động lại: nạp lệnh gần nhất và cảnh báo đang mở từ DB, nên không tưới lại ngay và không báo trùng.
+- Dự đoán chỉ làm van mở **sớm hơn**, không vượt qua các chốt trên. Analytics tắt, lỗi, chậm quá 1 s hoặc chưa calibrate zone đó thì controller dùng luật theo ngưỡng như cũ.
 
 ## 4. Cảnh báo
 
@@ -97,8 +98,8 @@ Mô hình cân bằng nước đơn giản, cố ý **không** chép công thứ
 độ ẩm(t+1) = độ ẩm(t) + Δt × ( −(bay hơi nền + bay hơi theo nhiệt độ × T) + hiệu quả tưới × van mở + hiệu quả mưa × mưa )
 ```
 
-- `POST /model/calibrate`: fit 4 hệ số từ lịch sử bằng bình phương tối thiểu, ràng buộc không âm.
-- `POST /forecast`: quỹ đạo độ ẩm theo giờ, dùng dự báo thời tiết Open-Meteo.
+- `POST /model/calibrate`: fit 4 hệ số từ lịch sử bằng bình phương tối thiểu, ràng buộc không âm. Fit **riêng từng zone** (`zoneId`) và lưu ra file, khởi động lại vẫn còn.
+- `POST /forecast`: quỹ đạo độ ẩm theo giờ, dùng hệ số của zone và nhiệt độ người gọi đưa vào (không có thì dự báo Open-Meteo); trả kèm `calibrated`.
 - `POST /whatif`: so sánh nhiều lịch tưới; với mỗi lịch trả độ ẩm thấp nhất, số giờ dưới khoảng tối ưu, số giờ dưới điểm héo, tổng nước, và chọn lịch tốt nhất.
 - `npm run eval`: MAE/RMSE của mô hình so với hai baseline (giữ nguyên giá trị, ngoại suy tuyến tính), chia train/test theo thời gian.
 
@@ -119,11 +120,26 @@ Mô hình cân bằng nước đơn giản, cố ý **không** chép công thứ
 - Bay hơi nền `evapBase` bị ép về 0 (ước lượng âm), toàn bộ bay hơi được giải thích qua nhiệt độ. Hệ số mưa không fit (dữ liệu hạn hán).
 - Mỗi zone chỉ có 28 giờ test (10–21 điểm mỗi tầm); cần chạy lâu hơn để số liệu chắc chắn hơn.
 
-Hiện trạng: controller **chưa** dùng dự đoán.
+**Controller dùng dự đoán.** Ở pha nghỉ, nếu zone chưa khô, controller gửi cho analytics độ ẩm và nhiệt độ hiện tại của twin, hỏi độ ẩm sau 1 giờ ruộng. Dự đoán dưới ngưỡng khô thì mở van ngay, lý do ghi `dự đoán 1h: 44.6% < 45% (hiện 45.4%)`. Gửi nhiệt độ của twin thay vì dùng dự báo Open-Meteo để dự đoán khớp với ruộng đang chạy (simulator phát lại thời tiết tháng 5/2025); ở tầm 1 giờ, coi nhiệt độ không đổi là đủ vì bay hơi chỉ đổi 0,02–0,04 %/giờ mỗi °C.
+
+**So sánh bật/tắt dự đoán** (21/11/2026, simulator thật, hạn hán, nhanh 600 lần, mỗi lần 7 phút thật ≈ 70 giờ ruộng, hệ số fit riêng từng zone). Giờ ruộng dưới ngưỡng khô / số cảnh báo `soil_dry` / số lệnh mở (trong đó mở sớm do dự đoán):
+
+| Zone | Tắt dự đoán | Bật dự đoán |
+|---|---|---|
+| A | 8,0 h / 5 / 14 | 6,7 h / 4 / 13 (6) |
+| B | 31,8 h / 3 / 22 | 30,4 h / 3 / 23 (6) |
+| C | 6,6 h / 4 / 12 | 6,3 h / 3 / 13 (6) |
+| D | 2,6 h / 3 / 10 | 2,9 h / 2 / 10 (5) |
+| **Tổng** | **49,0 h / 15 / 58** | **46,3 h / 12 / 59 (23)** |
+
+Đọc kết quả:
+- Cơ chế chạy đúng: 994 lần hỏi analytics đều thành công, 23/59 lệnh mở là mở sớm do dự đoán, không lệnh nào `failed`, số lệnh tưới gần như không đổi (không tưới thừa).
+- Lợi ích nhỏ: thời gian dưới ngưỡng khô giảm khoảng 5%, cảnh báo `soil_dry` giảm 15 → 12. Đúng như dự kiến, vì ở tầm 1 giờ độ ẩm chỉ giảm khoảng 0,5–1%. Mỗi chế độ chỉ chạy một lần và hai lần chạy không bắt đầu cùng pha thời tiết, nên chênh lệch này chưa đủ để kết luận chắc chắn.
+- Độ ẩm thấp nhất không cải thiện. Zone B nằm dưới ngưỡng khoảng 30/70 giờ ở cả hai chế độ: trong hạn hán, mỗi lần tưới tối đa 30 phút ruộng rồi nghỉ 1 giờ không bù kịp bay hơi. Đây là giới hạn công suất tưới (`CTRL_MAX_RUN_SEC`, `CTRL_MIN_REST_SEC`), dự đoán không sửa được.
 
 ## 6. Kết quả kiểm thử
 
-**Unit test**: 136/136 pass toàn repo; trong đó của B: twin 32, controller 48, analytics 37. Test controller có một "simulator mini" chạy cả vòng kín (khô → tưới → phục hồi), mất dữ liệu giữa lúc tưới, van không phản hồi, khởi động lại giữa lúc tưới.
+**Unit test**: 152/152 pass toàn repo; trong đó của B: twin 32, controller 59, analytics 42. Test controller có một "simulator mini" chạy cả vòng kín (khô → tưới → phục hồi), mất dữ liệu giữa lúc tưới, van không phản hồi, khởi động lại giữa lúc tưới.
 
 **Chạy thật với simulator của A** (21/11/2026, bật hạn hán, simulator tick 1 s ≈ nhanh 300 lần, khoảng 10 phút):
 
@@ -161,12 +177,13 @@ Giới hạn đã biết:
 - **Mưa**: không có số đo, nên controller không chặn tưới khi mưa.
 
 Việc tiếp theo, theo thứ tự:
-1. Controller dùng dự đoán của analytics (yêu cầu tuần 6), ở tầm 1–3 giờ nơi mô hình đáng tin.
-2. Mở PR `b/twin-core` vào `main`.
-3. Báo cáo mục 5.4 và kịch bản demo.
-4. (Tùy chọn) Chạy thu dữ liệu lâu hơn nếu báo cáo cần số liệu fit chắc hơn.
+1. Mở PR `b/twin-core` vào `main`.
+2. Báo cáo mục 5.4 và kịch bản demo.
+3. (Tùy chọn) Chạy thu dữ liệu lâu hơn nếu báo cáo cần số liệu fit chắc hơn.
 
-Đã xong ngày 21/11/2026: tỉ lệ thời gian mô phỏng (mục 9); fit mô hình từ dữ liệu thật (mục 5).
+Từ các việc trên trở đi, mỗi việc đi qua Spec Kit (specify → clarify → plan → tasks → implement) trên máy của B.
+
+Đã xong ngày 21/11/2026: tỉ lệ thời gian mô phỏng (mục 9); fit mô hình từ dữ liệu thật (mục 5); controller dùng dự đoán (mục 3, 5).
 
 ## 9. Thời gian ruộng và thời gian thật
 
@@ -237,6 +254,7 @@ Nguyên tắc: làm theo thứ tự phụ thuộc, mỗi bước có tiêu chí 
 - B3.4 `adapters/mqtt.ts`: publish `cmd`, subscribe `state`. **DoD:** chạy qua broker giả (interface).
 - B3.5 `CommandStore` + `AlertStore` (memory/PG) theo D6. **DoD:** test ghi lệnh kèm lý do.
 - B3.6 Vòng lặp Controller `tick()`: đọc twin (HTTP hoặc repo), quyết định, gửi lệnh, đánh giá cảnh báo. **DoD:** test closed loop với simulator mini: hạn hán -> cảnh báo -> tưới -> độ ẩm phục hồi -> đóng cảnh báo. (MVP M2)
+- B3.7 *(bổ sung 21/11, theo project_assigning tuần 6 "Controller dùng dự đoán")* Luật tưới sớm: ở `idle`, dự đoán độ ẩm sau `CTRL_PREDICT_HOURS` < `dryBelow` thì mở; chỉ dùng hệ số đã calibrate; analytics lỗi thì quay về luật ngưỡng; bật/tắt bằng `CTRL_PREDICT`. **DoD:** test thuần (mở sớm, bỏ qua khi chưa calibrate, lỗi thì quay về luật cũ) và bảng so sánh bật/tắt trên simulator thật.
 
 ## 4. Analytics (tuần 6-7)
 
@@ -246,6 +264,7 @@ Nguyên tắc: làm theo thứ tự phụ thuộc, mỗi bước có tiêu chí 
 - B4.4 `domain/whatif.ts`: so sánh nhiều lịch tưới, trả quỹ đạo và chỉ số (độ ẩm min, thời gian dưới WP, tổng nước). **DoD:** test lịch tưới nhiều hơn cho độ ẩm cao hơn.
 - B4.5 `domain/evaluate.ts`: MAE/RMSE, baseline persistence và linear-trend, chia train/test theo thời gian. **DoD:** script `npm run eval -w analytics` in bảng.
 - B4.6 REST: `POST /forecast`, `POST /whatif`, `GET /model`. **DoD:** test HTTP.
+- B4.7 *(bổ sung 21/11)* Hệ số riêng theo zone, lưu file (`ANALYTICS_MODEL_FILE`); `/forecast` nhận `zoneId`, `temp` và trả `calibrated`. **DoD:** test ghi/đọc file, chọn đúng hệ số theo zone, có `temp` thì không gọi nguồn thời tiết.
 
 ## 5. Đóng gói và tích hợp (xuyên suốt)
 

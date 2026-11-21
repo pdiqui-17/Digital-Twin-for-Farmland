@@ -89,6 +89,7 @@ Máy trạng thái mỗi zone: `idle → pending → watering → cooldown → i
 | Bước | Điều kiện |
 |---|---|
 | Mở van (`idle → pending`) | `soilMoisture < thresholds.dryBelow`; gửi lệnh `open` với `durationSec = CTRL_MAX_RUN_SEC` |
+| Tưới sớm theo dự đoán (`idle → pending`) | chưa khô nhưng analytics dự đoán sau `CTRL_PREDICT_HOURS` giờ ruộng độ ẩm `< dryBelow`; lý do ghi `dự đoán 1h: 44.6% < 45% (hiện 45.4%)`. Chỉ dùng hệ số đã calibrate cho zone đó |
 | Xác nhận (`pending → watering`) | van báo `open` với đúng `commandId` (hoặc `ts` mới hơn lệnh) |
 | Van không xác nhận lệnh mở | quá `CTRL_ACK_TIMEOUT_SEC`: lệnh `open` thành `failed`, gửi thêm lệnh `close` để an toàn, sinh cảnh báo `valve_ack_timeout` |
 | Đóng van | độ ẩm ≥ `optimalLow + CTRL_STOP_FRACTION × (optimalHigh − optimalLow)`, hoặc chạy quá `CTRL_MAX_RUN_SEC`, hoặc mất dữ liệu độ ẩm |
@@ -97,6 +98,8 @@ Máy trạng thái mỗi zone: `idle → pending → watering → cooldown → i
 Ví dụ zone-B (tối ưu 55-80%): mở khi < 55%, đóng khi đạt 67,5%.
 Thiếu dữ liệu thì không mở. Van đang mở do nguồn khác thì không can thiệp.
 Pipeline không có số đo mưa nên controller không chặn tưới khi trời mưa (giới hạn đã biết, không nằm trong yêu cầu).
+
+**Dự đoán.** Controller chỉ hỏi `POST {ANALYTICS_URL}/forecast` khi dự đoán có thể đổi quyết định: van đang nghỉ và đóng, zone có dữ liệu, chưa khô và có nhiệt độ. Request gửi `zoneId`, độ ẩm, nhiệt độ hiện tại của twin (`temp`) và ngưỡng của zone, timeout 1 s. Analytics lỗi, chậm hoặc chưa calibrate zone đó thì controller dùng luật theo ngưỡng như cũ; các chốt an toàn (nghỉ, chạy tối đa, không tưới khi `unknown`) không đổi. Metric `controller_predictions_total{result=ok|none|error}`.
 
 Lệnh gửi lên MQTT `farm/{farmId}/zone/{zoneId}/actuator/valve/cmd` (payload `ValveCommandMessage`, `actuatorId = valve-<zoneId>`) và ghi bảng `commands`. Cột `status`:
 
@@ -136,6 +139,9 @@ Khởi động lại: controller nạp từ DB các cảnh báo đang mở và l
 | `KAFKA_BROKERS` | (không) | đặt thì publish lên topic `alerts` |
 | `TELEGRAM_TOKEN` `TELEGRAM_CHAT_ID` | | |
 | `AUTO_IRRIGATION` | 1 | `0` = chỉ cảnh báo, không tự tưới |
+| `CTRL_PREDICT` | 1 | `0` = tắt tưới sớm theo dự đoán |
+| `CTRL_PREDICT_HOURS` | 1 | tầm dự đoán, **giờ ruộng** (mô hình đáng tin ở 1–3 giờ) |
+| `ANALYTICS_URL` | http://localhost:3012 | |
 | `SIM_TIME_SCALE` | (tự suy) | số giây ruộng trong 1 giây thật. Không đặt thì suy từ `SIMULATOR_TICK_INTERVAL_MS` và `SIMULATOR_PHYSICS_MINUTES_PER_TICK` (mặc định của simulator: 60). Nông trại thật: `1` |
 | `CTRL_TICK_SEC` | khoảng 10 phút ruộng, trong 1–10 s | giây thật (60 lần: 10 s; 300 lần: 2 s) |
 | `CTRL_STOP_FRACTION` | 0.5 | vị trí điểm đóng van trong khoảng tối ưu |
@@ -154,10 +160,10 @@ Khởi động lại: controller nạp từ DB các cảnh báo đang mở và l
 
 | Method | Path | Body | Mô tả |
 |---|---|---|---|
-| POST | `/forecast` | `{moisture, horizonHours?=6 (1-48), irrigation?: [{startHour,durationHours}], lat?, lon?}` | Quỹ đạo độ ẩm theo giờ |
-| POST | `/whatif` | `{moisture, horizonHours?=24 (1-72), schedules: [{name, windows}], lat?, lon?}` | So sánh lịch tưới; trả `scenarios[]` và `best` |
-| GET | `/model` | | Hệ số hiện tại và kết quả fit |
-| POST | `/model/calibrate` | `{samples: [{tsMs, moisture, temp, rain, open}]}` | Fit lại hệ số từ lịch sử (>= 10 mẫu). Mẫu theo **giờ ruộng**, bước 1 giờ; `open` là phần thời gian van mở trong bước (0..1) |
+| POST | `/forecast` | `{moisture, horizonHours?=6 (1-48), irrigation?: [{startHour,durationHours}], zoneId?, temp?, optimalMin?, optimalMax?, lat?, lon?}` | `{calibrated, points}`: quỹ đạo độ ẩm theo giờ ruộng. `zoneId`: dùng hệ số của zone. `temp`: coi nhiệt độ không đổi, không mưa, không gọi nguồn thời tiết. `calibrated = false`: hệ số mặc định, không nên tin |
+| POST | `/whatif` | `{moisture, horizonHours?=24 (1-72), schedules: [{name, windows}], zoneId?, lat?, lon?}` | So sánh lịch tưới; trả `scenarios[]` và `best` |
+| GET | `/model` | | `{params, fit, zones}`: hệ số chung và hệ số theo zone kèm kết quả fit |
+| POST | `/model/calibrate` | `{zoneId?, samples: [{tsMs, moisture, temp, rain, open}]}` hoặc `{zoneId?, csv}` | Fit lại hệ số từ lịch sử (>= 10 mẫu); có `zoneId` thì chỉ ghi hệ số của zone đó. Lưu vào `ANALYTICS_MODEL_FILE`, khởi động lại vẫn còn. `csv` là đúng nội dung `export-samples` in ra. Mẫu theo **giờ ruộng**, bước 1 giờ; `open` là phần thời gian van mở trong bước (0..1) |
 | GET | `/healthz` `/readyz` `/metrics` | | Metric: `analytics_requests_total` |
 
 | Biến môi trường | Mặc định | Ý nghĩa |
@@ -165,8 +171,9 @@ Khởi động lại: controller nạp từ DB các cảnh báo đang mở và l
 | `ANALYTICS_PORT` (hoặc `PORT`) | 3012 | |
 | `WEATHER` | (Open-Meteo) | `constant` = không gọi Open-Meteo |
 | `FARM_LAT` `FARM_LON` | 11.9404, 108.4583 | Lâm Đồng |
+| `ANALYTICS_MODEL_FILE` | `.data/analytics-model.json` | file hệ số đã calibrate (`.data/` không commit) |
 
-Lỗi nguồn thời tiết trả 502. Hệ số mặc định chỉ là giá trị khởi tạo: PHẢI chạy `/model/calibrate` bằng dữ liệu thật trước khi tin dự đoán.
+Lỗi nguồn thời tiết trả 502. Hệ số mặc định chỉ là giá trị khởi tạo: PHẢI chạy `/model/calibrate` bằng dữ liệu thật trước khi tin dự đoán (controller bỏ qua dự đoán khi `calibrated = false`).
 
 ### Fit mô hình từ dữ liệu trong DB
 
@@ -175,6 +182,8 @@ Lỗi nguồn thời tiết trả 502. Hệ số mặc định chỉ là giá tr
 npm run export-samples -- --zone zone-B --from 2026-11-21T08:23:15Z --to 2026-11-21T08:32:30Z --scale 600 > zone-B.csv
 # 2. Fit trên 70% đầu, đánh giá MAE/RMSE trên 30% sau so với baseline (tham số 2 = khoảng ẩm tối ưu của zone)
 npm run eval -- zone-B.csv 55,80
+# 3. Nạp hệ số của zone vào analytics đang chạy (lưu file, controller dùng ngay)
+node -e 'process.stdout.write(JSON.stringify({zoneId:"zone-B",csv:require("fs").readFileSync("zone-B.csv","utf8")}))' \n  | curl -X POST -H 'Content-Type: application/json' --data-binary @- http://localhost:3012/model/calibrate
 ```
 
 `export-samples` quy giờ thật sang giờ ruộng theo `--scale` (mặc định suy từ `.env` hiện tại; phải là tỉ lệ LÚC thu dữ liệu), gom bản tin chất lượng tốt thành bước 1 giờ ruộng (trung bình độ ẩm đất và nhiệt độ), tính khoảng van mở từ bảng `commands` (từ lúc van xác nhận tới lệnh đóng hoặc hết `durationSec`), và ghi `rain = 0`. Cùng file CSV có thể gửi cho `/model/calibrate`.
@@ -182,7 +191,7 @@ npm run eval -- zone-B.csv 55,80
 Lưu ý về dữ liệu:
 - Pipeline không có số đo mưa. Lấy mẫu fit trong lúc simulator bật hạn hán (khi đó mưa = 0 là đúng thật); hệ số mưa `rainGain` vì vậy không được fit.
 - Không gộp dữ liệu của các lần chạy có tốc độ simulator khác nhau vào một lần xuất.
-- `/forecast` lấy dự báo thật của hôm nay, còn simulator phát lại thời tiết 8–15/5/2025 với tốc độ tăng. Khi demo dùng `WEATHER=constant` để dự đoán không lệch với nông trại ảo.
+- Không có `temp`, `/forecast` lấy dự báo thật của hôm nay, còn simulator phát lại thời tiết 8–15/5/2025. Controller luôn gửi `temp` của twin nên không bị lệch; khi gọi tay để demo thì truyền `temp` hoặc dùng `WEATHER=constant`.
 
 ---
 

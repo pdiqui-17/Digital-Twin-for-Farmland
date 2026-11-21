@@ -1,10 +1,10 @@
 import type { TwinAlertEvent, ZoneState } from "@digital-twin/shared";
 import { closeAlert, defaultRules, emptyBook, evaluateAlerts, openAlert, restoreBook, type AlertBook, type AlertRule, type AlertSpec } from "./domain/alerts";
 import {
-  DEFAULT_IRRIGATION, closeAck, decide, initialValveCtx, restorePendingClose, restoreValveCtx,
-  type IrrigationRules, type PendingClose, type ValveCtx, type ValveNote,
+  DEFAULT_IRRIGATION, closeAck, decide, initialValveCtx, needsPrediction, restorePendingClose, restoreValveCtx,
+  type IrrigationRules, type PendingClose, type Prediction, type ValveCtx, type ValveNote,
 } from "./domain/valve";
-import type { AlertPublisher, AlertStore, CommandPublisher, CommandStore, Notifier, TwinSource } from "./adapters/ports";
+import type { AlertPublisher, AlertStore, CommandPublisher, CommandStore, ForecastSource, Notifier, TwinSource } from "./adapters/ports";
 
 export interface ControllerDeps {
   twin: TwinSource;
@@ -18,6 +18,12 @@ export interface ControllerDeps {
   alertCooldownSec?: number;
   /** Tắt tự động tưới (chỉ cảnh báo). */
   autoIrrigation?: boolean;
+  /** Có thì bật luật tưới sớm theo dự đoán; lỗi/không có dự đoán thì chỉ dùng luật theo ngưỡng. */
+  forecast?: ForecastSource;
+  /** Tầm dự đoán, giờ ruộng. Mặc định 1. */
+  predictHours?: number;
+  /** Báo kết quả mỗi lần hỏi dự đoán (metrics). */
+  onPrediction?: (result: "ok" | "none" | "error") => void;
 }
 
 /** Ghi chú của máy trạng thái -> trạng thái mới của lệnh open trong bảng commands. */
@@ -91,7 +97,9 @@ export class Controller {
 
       // 3) Điều khiển van
       const cur = this.ctx.get(zone.zoneId) ?? initialValveCtx();
-      const dec = this.d.autoIrrigation === false ? { ctx: cur, command: null, note: null } : decide(zone, cur, this.irrigation, now);
+      const auto = this.d.autoIrrigation !== false;
+      const prediction = auto ? await this.predict(zone, cur) : null;
+      const dec = auto ? decide(zone, cur, this.irrigation, now, prediction) : { ctx: cur, command: null, note: null };
       this.ctx.set(zone.zoneId, dec.ctx);
       if (dec.command) {
         await this.d.commandStore.record(dec.command); // ghi trước khi gửi để luôn truy vết được
@@ -109,6 +117,19 @@ export class Controller {
         const r = closeAlert(this.book, this.valveAlertSpec(zone, `Zone ${zone.zoneId}: van đã phản hồi`), now);
         this.book = r.book; if (r.event) await this.emit(r.event);
       }
+    }
+  }
+
+  /** Hỏi analytics khi luật dự đoán có thể đổi quyết định. Lỗi không làm hỏng tick: coi như không có dự đoán. */
+  private async predict(zone: ZoneState, ctx: ValveCtx): Promise<Prediction | null> {
+    if (!this.d.forecast || !needsPrediction(zone, ctx)) return null;
+    try {
+      const p = await this.d.forecast.predict(zone, this.d.predictHours ?? 1);
+      this.d.onPrediction?.(p ? "ok" : "none");
+      return p;
+    } catch {
+      this.d.onPrediction?.("error");
+      return null;
     }
   }
 

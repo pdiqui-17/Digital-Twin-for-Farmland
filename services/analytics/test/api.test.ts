@@ -54,6 +54,39 @@ describe("Analytics API", () => {
     expect(after.params).not.toEqual(before.params);
     expect((await post("/model/calibrate", { samples: [] })).status).toBe(400);
   });
+  it("calibrate theo zoneId: forecast của zone đó dùng hệ số riêng và báo calibrated", async () => {
+    const saved: unknown[] = [];
+    const s = createApp({ weather: new ConstantWeather({ temp: 30, rain: 0 }), persist: (m) => saved.push(structuredClone(m)) }).listen(0);
+    const b = `http://127.0.0.1:${(s.address() as AddressInfo).port}`;
+    const p = (path: string, body: unknown) => fetch(b + path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    try {
+      expect((await (await p("/forecast", { moisture: 50, zoneId: "zone-A" })).json()).calibrated).toBe(false);
+      expect((await p("/model/calibrate", { zoneId: "zone-A", samples: generateSynthetic(400) })).status).toBe(200);
+      expect(saved).toHaveLength(1);
+      const model = await (await fetch(b + "/model")).json();
+      expect(Object.keys(model.zones)).toEqual(["zone-A"]);
+      expect(model.fit).toBeNull(); // hệ số chung không bị đè
+      expect((await (await p("/forecast", { moisture: 50, zoneId: "zone-A" })).json()).calibrated).toBe(true);
+      expect((await (await p("/forecast", { moisture: 50, zoneId: "zone-B" })).json()).calibrated).toBe(false);
+      expect((await p("/model/calibrate", { zoneId: 5, samples: generateSynthetic(400) })).status).toBe(400);
+      const csv = "ts,moisture,temp,rain,open\n" + generateSynthetic(100)
+        .map((x) => `${new Date(x.tsMs).toISOString()},${x.moisture},${x.temp},${x.rain},${x.open}`).join("\n");
+      expect((await p("/model/calibrate", { zoneId: "zone-B", csv })).status).toBe(200);
+      expect(Object.keys((await (await fetch(b + "/model")).json()).zones)).toEqual(["zone-A", "zone-B"]);
+    } finally { await new Promise<void>((r) => s.close(() => r())); }
+  });
+  it("forecast có temp: không gọi provider, nhiệt độ cao bay hơi nhanh hơn", async () => {
+    const bad: WeatherProvider = { hourly: async () => { throw new Error("không được gọi"); } };
+    const s = createApp({ weather: bad }).listen(0);
+    const b = `http://127.0.0.1:${(s.address() as AddressInfo).port}`;
+    const f = async (temp: unknown) => fetch(b + "/forecast", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ moisture: 50, horizonHours: 2, temp }) });
+    try {
+      const cool = await (await f(15)).json(), hot = await (await f(35)).json();
+      expect(cool.points).toHaveLength(2);
+      expect(hot.points[1].moisture).toBeLessThan(cool.points[1].moisture);
+      expect((await f("30")).status).toBe(400);
+    } finally { await new Promise<void>((r) => s.close(() => r())); }
+  });
   it("nguồn thời tiết lỗi trả 502", async () => {
     const bad: WeatherProvider = { hourly: async () => { throw new Error("down"); } };
     const s = createApp({ weather: bad }).listen(0);

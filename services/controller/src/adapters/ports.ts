@@ -1,8 +1,10 @@
 import type { TwinAlertEvent, ValveCommandMessage, ZoneState } from "@digital-twin/shared";
 import type { OpenAlertRow } from "../domain/alerts";
-import type { CommandRecord, CommandStatus } from "../domain/valve";
+import type { CommandRecord, CommandStatus, Prediction } from "../domain/valve";
 
 export interface TwinSource { zones(): Promise<ZoneState[]>; }
+/** Dự đoán độ ẩm sau `hours` giờ ruộng nếu không tưới. null = không có dự đoán đáng tin (chưa calibrate). */
+export interface ForecastSource { predict(zone: ZoneState, hours: number): Promise<Prediction | null>; }
 export interface CommandPublisher { publish(cmd: ValveCommandMessage): Promise<void>; }
 
 /** Bảng commands: chỉ Controller ghi. */
