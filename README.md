@@ -16,4 +16,4 @@ npm run typecheck
 npm run eval             # MAE/RMSE mô hình dự đoán của Analytics
 ```
 
-Chạy toàn hệ thống và kiểm thử vòng tưới: `docs/api.md`, mục 4.
+Chạy toàn hệ thống và kiểm thử vòng tưới: `docs/api.md`, mục 5; image container của Role B: mục 4.

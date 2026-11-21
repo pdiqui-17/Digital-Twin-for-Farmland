@@ -195,7 +195,48 @@ Lưu ý về dữ liệu:
 
 ---
 
-## 4. Chạy local
+## 4. Image container (giao cho Role C)
+
+Mỗi service có Dockerfile multi-stage trong thư mục của nó, cùng mẫu với simulator/processor của Role A: build `tsc` → chạy `node dist/index.js`, nền `node:22-alpine`, user `node` (không root), không có `.env` trong image. Build từ gốc repo:
+
+```bash
+docker build -f services/twin-service/Dockerfile -t dtf-twin-service .
+docker build -f services/controller/Dockerfile   -t dtf-controller .
+docker build -f services/analytics/Dockerfile    -t dtf-analytics .
+```
+
+| Image | Cổng | Probe | Ổ lưu trữ |
+|---|---|---|---|
+| `dtf-twin-service` | 3010 | `/healthz`, `/readyz`, `/metrics` | không (trạng thái nằm trong Postgres) |
+| `dtf-controller` | 3011 | như trên (`/readyz` 503 tới khi tick đầu thành công) | không |
+| `dtf-analytics` | 3012 | như trên | `/data` (`ANALYTICS_MODEL_FILE=/data/analytics-model.json` đặt sẵn trong image): hệ số đã calibrate; không gắn ổ thì mất khi xóa container |
+
+Mọi cấu hình truyền bằng biến môi trường (danh sách ở mục 1–3). Trong container `localhost` là chính container, nên PHẢI đặt lại địa chỉ:
+
+| Biến | Service | Giá trị trong mạng compose dev (`deploy_default`) |
+|---|---|---|
+| `POSTGRES_HOST`, `POSTGRES_PORT` (hoặc `DATABASE_URL`) | twin, controller | `timescaledb`, `5432` |
+| `KAFKA_BROKERS` | twin, controller | `kafka:29092` (listener nội bộ; `localhost:9092` chỉ dùng từ máy host) |
+| `MQTT_BROKER_URL` | twin, controller | `mqtt://mosquitto:1883` |
+| `TWIN_URL`, `ANALYTICS_URL` | controller | `http://<tên container twin>:3010`, `http://<tên container analytics>:3012` |
+| `SIM_TIME_SCALE` hoặc `SIMULATOR_TICK_INTERVAL_MS` + `SIMULATOR_PHYSICS_MINUTES_PER_TICK` | twin, controller | PHẢI khớp tốc độ simulator đang chạy |
+
+Nếu dùng `--env-file .env`: `.env` mẫu có `ANALYTICS_MODEL_FILE=` (rỗng) sẽ ghi đè giá trị trong image, nên truyền lại `-e ANALYTICS_MODEL_FILE=/data/analytics-model.json` (hoặc xóa dòng đó khỏi file env).
+
+Trên Windows với Git Bash, đặt `export MSYS_NO_PATHCONV=1` trước các lệnh dưới (nếu không, `/data` bị đổi thành đường dẫn Windows và analytics không ghi được hệ số).
+
+Ví dụ chạy cả ba trên hạ tầng `npm run infra:up` (đã chạy đạt ngày 2026-11-21, simulator/processor chạy bằng `npm`):
+
+```bash
+COMMON="--network deploy_default --env-file .env -e POSTGRES_HOST=timescaledb -e POSTGRES_PORT=5432   -e KAFKA_BROKERS=kafka:29092 -e MQTT_BROKER_URL=mqtt://mosquitto:1883"
+docker run -d --name b-analytics $COMMON -e ANALYTICS_MODEL_FILE=/data/analytics-model.json   -v b-analytics-data:/data -p 3012:3012 dtf-analytics
+docker run -d --name b-twin $COMMON -p 3010:3010 dtf-twin-service
+docker run -d --name b-controller $COMMON -e TWIN_URL=http://b-twin:3010 -e ANALYTICS_URL=http://b-analytics:3012   -p 3011:3011 dtf-controller
+```
+
+---
+
+## 5. Chạy local
 
 Cần `.env` (chép từ `.env.example`, có sẵn `TWIN_STORE=pg`, `TWIN_INGEST=kafka`, `CONTROLLER_STORE=pg`). Mỗi lệnh một terminal:
 
@@ -230,8 +271,8 @@ API của simulator (Role A) để tạo tình huống:
 
 Đừng tiêm lỗi vào cảm biến độ ẩm đất của zone đang test tưới: zone thành `unknown` và controller (đúng thiết kế) sẽ không tưới.
 
-## 5. Giới hạn đã biết
+## 6. Giới hạn đã biết
 
 - Lỗi `drift` của simulator không có cờ chất lượng riêng; chỉ phát hiện được khi giá trị vượt giới hạn vật lý (`out_of_range`).
 - Không có số đo mưa (xem mục 2 và 3).
-- C cần: image (`deploy/Dockerfile.service`), các biến môi trường ở trên, import `monitoring/grafana/farm-twin.json`.
+- C cần: image (mục 4), các biến môi trường ở trên, import `monitoring/grafana/farm-twin.json`.

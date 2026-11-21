@@ -159,6 +159,8 @@ Mô hình cân bằng nước đơn giản, cố ý **không** chép công thứ
 3. Lệnh đóng van treo mãi ở `sent` → theo dõi xác nhận của lệnh đóng.
 4. Tin nhắn đóng cảnh báo ghi "Đã ổn định: … đang khô" → mỗi luật có câu đóng riêng.
 
+**Image container** (21/11/2026, `docs/api.md` mục 4): 3 image build từ gốc repo theo mẫu image của A, kích thước 68–72 MB (processor của A: 77 MB), chạy user `node`, không chứa `.env`. Chạy cả 3 container trên mạng compose dev cùng simulator thật (hạn hán, 600 lần, 5 phút thật): `/healthz` trả 200 sau 3–10 s; mỗi zone có lệnh mở và đóng đều `completed` (39 lần mở, 19 lần mở sớm do dự đoán); hệ số analytics còn sau khi khởi động lại container (volume `/data`).
+
 ## 7. Quyết định thiết kế đã chốt
 
 | Quyết định | Lý do |
@@ -177,13 +179,15 @@ Giới hạn đã biết:
 - **Mưa**: không có số đo, nên controller không chặn tưới khi mưa.
 
 Việc tiếp theo, theo thứ tự:
-1. Mở PR `b/twin-core` vào `main`.
-2. Báo cáo mục 5.4 và kịch bản demo.
-3. (Tùy chọn) Chạy thu dữ liệu lâu hơn nếu báo cáo cần số liệu fit chắc hơn.
+1. Mở PR `b/twin-core` vào `main` (cần A hoặc C review).
+2. Kiểm tra dashboard Grafana (`monitoring/grafana/farm-twin.json`) trên một Grafana chạy tạm trên máy.
+3. Đo độ trễ end-to-end cùng C (chờ môi trường của C).
+4. Báo cáo mục 5.4 và kịch bản demo.
+5. (Tùy chọn) Chạy thu dữ liệu lâu hơn nếu báo cáo cần số liệu fit chắc hơn.
 
 Từ các việc trên trở đi, mỗi việc đi qua Spec Kit (specify → clarify → plan → tasks → implement) trên máy của B.
 
-Đã xong ngày 21/11/2026: tỉ lệ thời gian mô phỏng (mục 9); fit mô hình từ dữ liệu thật (mục 5); controller dùng dự đoán (mục 3, 5).
+Đã xong ngày 21/11/2026: tỉ lệ thời gian mô phỏng (mục 9); fit mô hình từ dữ liệu thật (mục 5); controller dùng dự đoán (mục 3, 5); image container cho 3 service (B5.1).
 
 ## 9. Thời gian ruộng và thời gian thật
 
@@ -268,7 +272,7 @@ Nguyên tắc: làm theo thứ tự phụ thuộc, mỗi bước có tiêu chí 
 
 ## 5. Đóng gói và tích hợp (xuyên suốt)
 
-- B5.1 Dockerfile multi-stage cho 3 service (giao C). **DoD:** `docker build` pass (không chạy được trong sandbox, ghi rõ).
+- B5.1 Dockerfile multi-stage cho 3 service (giao C). **DoD:** `docker build` pass (không chạy được trong sandbox, ghi rõ). *(Xong 21/11: `services/<svc>/Dockerfile` thay cho `deploy/Dockerfile.service` cũ; đã build và chạy vòng tưới bằng container, mục 6.)*
 - B5.2 Danh sách biến môi trường từng service trong `docs/api.md` (C cần).
 - B5.3 Cuối mỗi mốc chạy `npm test` toàn repo và `scripts/e2e-local.ts`. **DoD:** xanh.
 
