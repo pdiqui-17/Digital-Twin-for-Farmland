@@ -78,6 +78,13 @@ describe("closed loop: hạn hán -> cảnh báo -> tự tưới -> phục hồi
     expect(Math.max(...trace.map((t) => t.m))).toBeLessThan(TH.optimalHigh); // không tưới quá tay
   });
 
+  it("mọi lệnh close đều được van xác nhận và chuyển sang completed (không treo ở sent)", async () => {
+    const { store } = await runLoop(400);
+    const closes = store.commands.filter((c) => c.action === "close");
+    expect(closes.length).toBeGreaterThan(1);
+    for (const c of closes) expect(store.status.get(c.commandId)).toBe("completed");
+  });
+
   it("không bao giờ tưới liên tục: hai lần mở cách nhau tối thiểu minRest + thời gian tưới", async () => {
     const { store } = await runLoop(400);
     const opens = store.commands.filter((c) => c.action === "open").map((c) => Date.parse(c.ts));
@@ -119,7 +126,10 @@ describe("closed loop: hạn hán -> cảnh báo -> tự tưới -> phục hồi
     const open = store.commands.filter((c) => c.action === "open");
     expect(open).toHaveLength(1);
     expect(store.status.get(open[0]!.commandId)).toBe("failed");
-    expect(store.commands.filter((c) => c.action === "close")).toHaveLength(1);
+    const close = store.commands.filter((c) => c.action === "close");
+    expect(close).toHaveLength(1);
+    // Van "chết" cũng không xác nhận lệnh đóng an toàn: lệnh close bị đánh dấu failed.
+    expect(store.status.get(close[0]!.commandId)).toBe("failed");
     expect(alerts.history.some((e) => e.rule === "valve_ack_timeout" && e.state === "open")).toBe(true);
   });
 });

@@ -2,6 +2,7 @@ import express from "express";
 import client from "prom-client";
 import { config, databaseUrl, irrigation } from "./config";
 import { Controller } from "./controller";
+import { defaultRules } from "./domain/alerts";
 import { HttpTwinSource } from "./adapters/http";
 import { LogCommandPublisher, MqttCommandPublisher } from "./adapters/mqtt";
 import { ConsoleNotifier, TelegramNotifier } from "./adapters/notifier";
@@ -42,6 +43,7 @@ async function main() {
     twin: new HttpTwinSource(config.twinUrl),
     commandPublisher, commandStore, alertStore, alertPublisher, notifier,
     irrigation, alertCooldownSec: config.alertCooldownSec, autoIrrigation: config.autoIrrigation,
+    alertRules: defaultRules(config.confirm),
   });
   await controller.restore();
 

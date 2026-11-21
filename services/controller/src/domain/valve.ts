@@ -109,6 +109,28 @@ export function decide(zone: ZoneState, ctx: ValveCtx, rules: IrrigationRules, n
 export type CommandStatus = "sent" | "acknowledged" | "completed" | "failed";
 export interface CommandRecord { cmd: ValveCommandMessage; status: CommandStatus; }
 
+/** Lệnh close đã gửi, chờ van xác nhận đã đóng. */
+export interface PendingClose { commandId: string; since: number; timedOut: boolean; }
+
+/**
+ * Theo dõi lệnh close: "confirmed" khi van báo closed (khớp commandId, hoặc ts mới hơn lệnh nếu nguồn không gửi id);
+ * "timeout" MỘT lần khi quá ackTimeoutSec mà chưa xác nhận (vẫn tiếp tục chờ, xác nhận muộn vẫn được ghi nhận).
+ */
+export function closeAck(zone: ZoneState, p: PendingClose, rules: IrrigationRules, now: Date): "confirmed" | "timeout" | null {
+  const v = zone.valve;
+  if (v.state === "closed") {
+    if (v.lastCommandId ? v.lastCommandId === p.commandId : !!v.ts && Date.parse(v.ts) >= p.since) return "confirmed";
+  }
+  if (!p.timedOut && (now.getTime() - p.since) / 1000 > rules.ackTimeoutSec) return "timeout";
+  return null;
+}
+
+/** Lệnh close còn chờ xác nhận lúc controller khởi động lại (lệnh gần nhất của zone là close, trạng thái sent). */
+export function restorePendingClose(last: CommandRecord | undefined): PendingClose | undefined {
+  if (!last || last.cmd.action !== "close" || last.status !== "sent") return undefined;
+  return { commandId: last.cmd.commandId, since: Date.parse(last.cmd.ts), timedOut: false };
+}
+
 /** Dựng lại pha van sau khi controller khởi động lại, từ lệnh gần nhất của zone (bảng commands). */
 export function restoreValveCtx(last: CommandRecord | undefined, rules: IrrigationRules, now: Date): ValveCtx {
   if (!last) return initialValveCtx();

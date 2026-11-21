@@ -38,6 +38,9 @@ describe("evaluateAlerts", () => {
     expect(TwinAlertEventSchema.safeParse(open).success).toBe(true);
     expect(open).toMatchObject({ farmId: "farm-01", category: "water_stress", state: "open", value: 42 });
     expect(closed).toMatchObject({ alertId: open!.alertId, state: "closed" });
+    // Nội dung lúc đóng nói sự cố đã hết, không lặp lại câu "đang khô" của lúc mở.
+    expect(closed!.message).toContain("đã đủ ẩm trở lại");
+    expect(closed!.message).not.toContain("đang khô");
   });
 
   it("cooldown chặn mở lại ngay sau khi vừa đóng", () => {
@@ -48,22 +51,24 @@ describe("evaluateAlerts", () => {
     expect(later.events.filter((e) => e.rule === "soil_dry")).toHaveLength(1);
   });
 
-  it("mất dữ liệu sinh zone_unknown, và không đụng luật độ ẩm", () => {
-    const { events } = run(emptyBook(), [null]);
-    expect(events.map((e) => e.rule)).toEqual(["zone_unknown"]);
+  it("mất dữ liệu kéo dài >= 60 s sinh zone_unknown, và không đụng luật độ ẩm", () => {
+    const { events } = run(emptyBook(), [null, null]);      // phút 0: chờ xác nhận, phút 1: mở
+    expect(events).toEqual([{ rule: "zone_unknown", state: "open", min: 1 }]);
   });
 
   it("có dữ liệu trở lại thì zone_unknown đóng", () => {
-    const { events } = run(emptyBook(), [null, 50]);
+    const { events } = run(emptyBook(), [null, null, 50]);
     expect(events.filter((e) => e.rule === "zone_unknown").map((e) => e.state)).toEqual(["open", "closed"]);
   });
 
-  it("cảm biến lỗi (theo cờ quality của Processor) mở rồi đóng sensor_fault", () => {
-    const a = evaluateAlerts(emptyBook(), zone({ faulty: ["s-A-moisture"] }), rules, at(0));
+  it("cảm biến lỗi kéo dài (theo cờ quality của Processor) mở rồi đóng sensor_fault", () => {
+    const a0 = evaluateAlerts(emptyBook(), zone({ faulty: ["s-A-moisture"] }), rules, at(0));
+    expect(a0.events).toHaveLength(0);                       // chưa đủ 15 s
+    const a = evaluateAlerts(a0.book, zone({ faulty: ["s-A-moisture"] }), rules, at(1));
     expect(a.events).toHaveLength(1);
     expect(a.events[0]).toMatchObject({ rule: "sensor_fault", category: "sensor_fault", state: "open" });
     expect(a.events[0]!.message).toContain("s-A-moisture");
-    const b = evaluateAlerts(a.book, zone({ faulty: [] }), rules, at(1));
+    const b = evaluateAlerts(a.book, zone({ faulty: [] }), rules, at(2));
     expect(b.events.map((e) => e.state)).toEqual(["closed"]);
   });
 
@@ -74,6 +79,53 @@ describe("evaluateAlerts", () => {
       b = r.book; r.events.filter((e) => e.rule === "fungal_risk").forEach((e) => out.push(e.state));
     }
     expect(out).toEqual(["open", "closed"]);
+  });
+});
+
+describe("thời gian xác nhận (confirmSec)", () => {
+  const sec = (s: number) => new Date(at(0).getTime() + s * 1000);
+  /** Chạy theo giây: mỗi phần tử là [giây, zone]. */
+  const runSec = (steps: [number, ReturnType<typeof zone>][]) => {
+    let b = emptyBook(); const events: { rule: string; state: string; s: number }[] = [];
+    for (const [s, z] of steps) {
+      const r = evaluateAlerts(b, z, rules, sec(s));
+      b = r.book; r.events.forEach((e) => events.push({ rule: e.rule, state: e.state, s }));
+    }
+    return { book: b, events };
+  };
+  const ok = zone({ moisture: 50 });
+  const faulty = zone({ moisture: 50, faulty: ["s-C-moisture"] });
+
+  it("lỗi cảm biến chỉ một tick (5 s) KHÔNG sinh cảnh báo", () => {
+    const { events, book } = runSec([[0, ok], [5, faulty], [10, ok], [15, ok]]);
+    expect(events).toEqual([]);
+    expect(book.pending).toEqual({});
+  });
+
+  it("lỗi kéo dài 3 tick (>= 15 s) thì mở sensor_fault đúng một lần", () => {
+    const { events } = runSec([[0, faulty], [5, faulty], [10, faulty], [15, faulty], [20, faulty]]);
+    expect(events).toEqual([{ rule: "sensor_fault", state: "open", s: 15 }]);
+  });
+
+  it("hai lỗi thoáng qua rời nhau không cộng dồn thành cảnh báo", () => {
+    const { events } = runSec([[0, faulty], [5, faulty], [10, ok], [15, faulty], [20, faulty], [25, ok]]);
+    expect(events).toEqual([]);
+  });
+
+  it("khoảng trống dữ liệu lúc khởi động (~20 s) không sinh zone_unknown", () => {
+    const unknown = zone({ moisture: null });
+    const { events } = runSec([[0, unknown], [5, unknown], [10, unknown], [15, unknown], [20, unknown], [25, ok]]);
+    expect(events).toEqual([]);
+  });
+
+  it("confirmSec = 0 thì mở ngay (cấu hình CTRL_*_CONFIRM_SEC=0)", () => {
+    const r = evaluateAlerts(emptyBook(), faulty, defaultRules({ sensorFaultSec: 0, zoneUnknownSec: 0 }), sec(0));
+    expect(r.events.map((e) => e.rule)).toEqual(["sensor_fault"]);
+  });
+
+  it("luật độ ẩm không có confirmSec vẫn mở ngay", () => {
+    const { events } = runSec([[0, zone({ moisture: 42 })]]);
+    expect(events).toEqual([{ rule: "soil_dry", state: "open", s: 0 }]);
   });
 });
 

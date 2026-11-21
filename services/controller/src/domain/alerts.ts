@@ -14,13 +14,26 @@ export interface AlertRule {
   /** Điều kiện đóng (khác điều kiện mở: hysteresis). */
   close: (v: number, z: ZoneState) => boolean;
   message: (z: ZoneState, v: number) => string;
+  /** Nội dung khi đóng cảnh báo (sự cố đã hết). */
+  closedMessage: (z: ZoneState, v: number) => string;
+  /**
+   * Điều kiện mở phải đúng LIÊN TỤC ít nhất chừng này giây (giờ thật) mới mở cảnh báo.
+   * Lọc lỗi thoáng qua một tick và khoảng trống dữ liệu lúc khởi động. Mặc định 0 = mở ngay.
+   */
+  confirmSec?: number;
 }
 
 export interface AlertBook {
   open: Record<string, { alertId: string; openedAt: number }>;
   closedAt: Record<string, number>;
+  /** Thời điểm (ms) điều kiện mở bắt đầu đúng, với luật có confirmSec, khi chưa đủ thời gian xác nhận. */
+  pending: Record<string, number>;
 }
-export const emptyBook = (): AlertBook => ({ open: {}, closedAt: {} });
+export const emptyBook = (): AlertBook => ({ open: {}, closedAt: {}, pending: {} });
+
+/** Thời gian xác nhận mặc định (giây thật). */
+export const DEFAULT_CONFIRM = { sensorFaultSec: 15, zoneUnknownSec: 60 };
+export type ConfirmOptions = typeof DEFAULT_CONFIRM;
 
 const key = (zoneId: string, rule: string) => `${zoneId}:${rule}`;
 
@@ -28,7 +41,7 @@ const key = (zoneId: string, rule: string) => `${zoneId}:${rule}`;
 export const MOISTURE_HYSTERESIS = 4;
 
 /** Luật mặc định. Ngưỡng độ ẩm lấy theo từng zone (zone.thresholds). */
-export function defaultRules(): AlertRule[] {
+export function defaultRules(confirm: ConfirmOptions = DEFAULT_CONFIRM): AlertRule[] {
   return [
     {
       id: "soil_dry", severity: "warning", category: "water_stress",
@@ -36,6 +49,7 @@ export function defaultRules(): AlertRule[] {
       open: (v, z) => v < z.thresholds.dryBelow,
       close: (v, z) => v >= z.thresholds.dryBelow + MOISTURE_HYSTERESIS,
       message: (z, v) => `Zone ${z.zoneId} đang khô: độ ẩm đất ${v.toFixed(1)}% (tối ưu ${z.thresholds.optimalLow}-${z.thresholds.optimalHigh}%)`,
+      closedMessage: (z, v) => `Zone ${z.zoneId} đã đủ ẩm trở lại: độ ẩm đất ${v.toFixed(1)}%`,
     },
     {
       id: "soil_critical", severity: "critical", category: "drought",
@@ -43,6 +57,7 @@ export function defaultRules(): AlertRule[] {
       open: (v, z) => v < z.thresholds.criticalBelow,
       close: (v, z) => v >= z.thresholds.criticalBelow + MOISTURE_HYSTERESIS,
       message: (z, v) => `Zone ${z.zoneId} nguy cấp: độ ẩm đất ${v.toFixed(1)}%`,
+      closedMessage: (z, v) => `Zone ${z.zoneId} đã thoát mức nguy cấp: độ ẩm đất ${v.toFixed(1)}%`,
     },
     {
       id: "zone_unknown", severity: "warning", category: "sensor_fault",
@@ -50,13 +65,17 @@ export function defaultRules(): AlertRule[] {
       open: (v) => v === 1,
       close: (v) => v === 0,
       message: (z) => `Zone ${z.zoneId} mất dữ liệu độ ẩm đất`,
+      closedMessage: (z) => `Zone ${z.zoneId} đã có dữ liệu độ ẩm đất trở lại`,
+      confirmSec: confirm.zoneUnknownSec,
     },
     {
       id: "sensor_fault", severity: "warning", category: "sensor_fault",
       value: (z) => z.faultySensors.length,
       open: (v) => v >= 1,
       close: (v) => v === 0,
-      message: (z, v) => (v > 0 ? `Zone ${z.zoneId} có ${v} cảm biến lỗi: ${z.faultySensors.join(", ")}` : `Zone ${z.zoneId} các cảm biến đã bình thường`),
+      message: (z, v) => `Zone ${z.zoneId} có ${v} cảm biến lỗi: ${z.faultySensors.join(", ")}`,
+      closedMessage: (z) => `Zone ${z.zoneId} các cảm biến đã bình thường`,
+      confirmSec: confirm.sensorFaultSec,
     },
     {
       id: "fungal_risk", severity: "warning", category: "fungal_risk",
@@ -64,6 +83,7 @@ export function defaultRules(): AlertRule[] {
       open: (v) => v >= 0.7,
       close: (v) => v < 0.4,
       message: (z, v) => `Zone ${z.zoneId} nguy cơ nấm cao (${(v * 100).toFixed(0)}%)`,
+      closedMessage: (z, v) => `Zone ${z.zoneId} nguy cơ nấm đã giảm (${(v * 100).toFixed(0)}%)`,
     },
   ];
 }
@@ -79,8 +99,9 @@ export function openAlert(book: AlertBook, s: AlertSpec, now: Date, cooldownSec:
   const closed = book.closedAt[k];
   if (closed !== undefined && now.getTime() - closed < cooldownSec * 1000) return { book, event: null };
   const alertId = `${k}:${now.getTime()}`;
+  const { [k]: _p, ...pending } = book.pending;
   return {
-    book: { ...book, open: { ...book.open, [k]: { alertId, openedAt: now.getTime() } } },
+    book: { ...book, open: { ...book.open, [k]: { alertId, openedAt: now.getTime() } }, pending },
     event: { alertId, ...s, state: "open", ts: now.toISOString() },
   };
 }
@@ -91,7 +112,7 @@ export function closeAlert(book: AlertBook, s: AlertSpec, now: Date): { book: Al
   if (!cur) return { book, event: null };
   const { [k]: _gone, ...rest } = book.open;
   return {
-    book: { open: rest, closedAt: { ...book.closedAt, [k]: now.getTime() } },
+    book: { ...book, open: rest, closedAt: { ...book.closedAt, [k]: now.getTime() } },
     event: { alertId: cur.alertId, ...s, state: "closed", ts: now.toISOString() },
   };
 }
@@ -108,12 +129,26 @@ export function evaluateAlerts(
     const spec = (message: string): AlertSpec => ({
       zoneId: zone.zoneId, farmId: zone.farmId, rule: r.id, severity: r.severity, category: r.category, message, value: v,
     });
-    const isOpen = !!b.open[key(zone.zoneId, r.id)];
-    if (!isOpen && r.open(v, zone)) {
+    const k = key(zone.zoneId, r.id);
+    const isOpen = !!b.open[k];
+    const wantsOpen = !isOpen && r.open(v, zone);
+    if (!isOpen && !wantsOpen && b.pending[k] !== undefined) {
+      // Điều kiện hết trước khi đủ thời gian xác nhận: lỗi thoáng qua, bỏ qua.
+      const { [k]: _gone, ...pending } = b.pending;
+      b = { ...b, pending };
+    }
+    if (wantsOpen && r.confirmSec) {
+      const since = b.pending[k] ?? now.getTime();
+      if (now.getTime() - since < r.confirmSec * 1000) {
+        if (b.pending[k] === undefined) b = { ...b, pending: { ...b.pending, [k]: since } };
+        continue;
+      }
+    }
+    if (wantsOpen) {
       const res = openAlert(b, spec(r.message(zone, v)), now, cooldownSec);
       b = res.book; if (res.event) events.push(res.event);
     } else if (isOpen && r.close(v, zone)) {
-      const res = closeAlert(b, spec(`Đã ổn định: ${r.message(zone, v)}`), now);
+      const res = closeAlert(b, spec(r.closedMessage(zone, v)), now);
       b = res.book; if (res.event) events.push(res.event);
     }
   }

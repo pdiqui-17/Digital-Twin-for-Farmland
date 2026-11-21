@@ -1,6 +1,9 @@
 import type { TwinAlertEvent, ZoneState } from "@digital-twin/shared";
 import { closeAlert, defaultRules, emptyBook, evaluateAlerts, openAlert, restoreBook, type AlertBook, type AlertRule, type AlertSpec } from "./domain/alerts";
-import { DEFAULT_IRRIGATION, decide, initialValveCtx, restoreValveCtx, type IrrigationRules, type ValveCtx, type ValveNote } from "./domain/valve";
+import {
+  DEFAULT_IRRIGATION, closeAck, decide, initialValveCtx, restorePendingClose, restoreValveCtx,
+  type IrrigationRules, type PendingClose, type ValveCtx, type ValveNote,
+} from "./domain/valve";
 import type { AlertPublisher, AlertStore, CommandPublisher, CommandStore, Notifier, TwinSource } from "./adapters/ports";
 
 export interface ControllerDeps {
@@ -30,6 +33,8 @@ const STATUS_ON: Partial<Record<ValveNote, "acknowledged" | "completed" | "faile
 /** Vòng điều khiển: mỗi tick đọc twin, quyết định lệnh van và đánh giá cảnh báo. */
 export class Controller {
   private ctx = new Map<string, ValveCtx>();
+  /** Lệnh close đang chờ van xác nhận, theo zone. */
+  private pendingClose = new Map<string, PendingClose>();
   private book: AlertBook = emptyBook();
   private rules: AlertRule[];
   private irrigation: IrrigationRules;
@@ -41,8 +46,11 @@ export class Controller {
 
   /** Khôi phục pha van và cảnh báo đang mở từ DB (gọi một lần khi khởi động). */
   async restore(now: Date = new Date()): Promise<void> {
-    for (const rec of await this.d.commandStore.latestPerZone())
+    for (const rec of await this.d.commandStore.latestPerZone()) {
       this.ctx.set(rec.cmd.zoneId, restoreValveCtx(rec, this.irrigation, now));
+      const pc = restorePendingClose(rec);
+      if (pc) this.pendingClose.set(rec.cmd.zoneId, pc);
+    }
     this.book = restoreBook(await this.d.alertStore.loadOpen());
   }
 
@@ -64,13 +72,32 @@ export class Controller {
       this.book = ev.book;
       for (const e of ev.events) await this.emit(e);
 
-      // 2) Điều khiển van
+      // 2) Lệnh close đang chờ: van đã đóng thật chưa?
+      const pc = this.pendingClose.get(zone.zoneId);
+      if (pc) {
+        const ack = closeAck(zone, pc, this.irrigation, now);
+        if (ack === "confirmed") {
+          this.pendingClose.delete(zone.zoneId);
+          await this.d.commandStore.setStatus(pc.commandId, "completed", now);
+          const r = closeAlert(this.book, this.valveAlertSpec(zone, `Zone ${zone.zoneId}: van đã xác nhận đóng`), now);
+          this.book = r.book; if (r.event) await this.emit(r.event);
+        } else if (ack === "timeout") {
+          this.pendingClose.set(zone.zoneId, { ...pc, timedOut: true });
+          await this.d.commandStore.setStatus(pc.commandId, "failed", now);
+          const r = openAlert(this.book, this.valveAlertSpec(zone, `Zone ${zone.zoneId}: van không xác nhận lệnh đóng, có thể vẫn đang tưới`), now, this.d.alertCooldownSec ?? 600);
+          this.book = r.book; if (r.event) await this.emit(r.event);
+        }
+      }
+
+      // 3) Điều khiển van
       const cur = this.ctx.get(zone.zoneId) ?? initialValveCtx();
       const dec = this.d.autoIrrigation === false ? { ctx: cur, command: null, note: null } : decide(zone, cur, this.irrigation, now);
       this.ctx.set(zone.zoneId, dec.ctx);
       if (dec.command) {
         await this.d.commandStore.record(dec.command); // ghi trước khi gửi để luôn truy vết được
         await this.d.commandPublisher.publish(dec.command);
+        if (dec.command.action === "close")
+          this.pendingClose.set(zone.zoneId, { commandId: dec.command.commandId, since: now.getTime(), timedOut: false });
       }
       const status = dec.note ? STATUS_ON[dec.note] : undefined;
       if (status && cur.commandId) await this.d.commandStore.setStatus(cur.commandId, status, now);

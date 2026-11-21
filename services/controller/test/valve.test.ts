@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { ValveCommandMessageSchema } from "@digital-twin/shared";
-import { DEFAULT_IRRIGATION as R, decide, initialValveCtx, restoreValveCtx, stopAt, type ValveCtx } from "../src/domain/valve";
+import { DEFAULT_IRRIGATION as R, closeAck, decide, initialValveCtx, restorePendingClose, restoreValveCtx, stopAt, type PendingClose, type ValveCtx } from "../src/domain/valve";
 import { at, zone } from "./helpers";
 
 const pending = (since = 0): ValveCtx => ({ phase: "pending", since: at(since).getTime(), commandId: "c1" });
@@ -90,10 +90,11 @@ describe("valve cooldown", () => {
   });
 });
 
+const cmd = (action: "open" | "close", min: number) => ({
+  commandId: "c1", farmId: "farm-01", zoneId: "zone-A", action, issuedBy: "controller", ts: at(min).toISOString(),
+});
+
 describe("restoreValveCtx (sau khi controller khởi động lại)", () => {
-  const cmd = (action: "open" | "close", min: number) => ({
-    commandId: "c1", farmId: "farm-01", zoneId: "zone-A", action, issuedBy: "controller", ts: at(min).toISOString(),
-  });
   it("không có lệnh nào thì idle", () => expect(restoreValveCtx(undefined, R, at(0)).phase).toBe("idle"));
   it("lệnh open đã xác nhận, chưa quá maxRun thì tiếp tục watering", () => {
     expect(restoreValveCtx({ cmd: cmd("open", 0), status: "acknowledged" }, R, at(10))).toMatchObject({ phase: "watering", commandId: "c1" });
@@ -107,5 +108,30 @@ describe("restoreValveCtx (sau khi controller khởi động lại)", () => {
   });
   it("lệnh cũ hơn thời gian nghỉ thì idle", () => {
     expect(restoreValveCtx({ cmd: cmd("close", 0), status: "sent" }, R, at(61)).phase).toBe("idle");
+  });
+});
+
+describe("closeAck (theo dõi lệnh close)", () => {
+  const pc = (since = 0, timedOut = false): PendingClose => ({ commandId: "c-close", since: at(since).getTime(), timedOut });
+  it("van báo closed đúng commandId thì confirmed", () => {
+    expect(closeAck(zone({ valve: "closed", valveTs: at(0), lastCommandId: "c-close" }), pc(), R, at(0))).toBe("confirmed");
+  });
+  it("closed nhưng commandId của lệnh khác (vd. van tự đóng theo durationSec) thì chưa confirmed", () => {
+    expect(closeAck(zone({ valve: "closed", valveTs: at(0), lastCommandId: "c-open" }), pc(), R, at(0))).toBeNull();
+  });
+  it("nguồn không gửi commandId: dựa vào ts mới hơn lệnh", () => {
+    expect(closeAck(zone({ valve: "closed", valveTs: at(1) }), pc(0), R, at(1))).toBe("confirmed");
+    expect(closeAck(zone({ valve: "closed", valveTs: at(-1) }), pc(0), R, at(0))).toBeNull();
+  });
+  it("quá ackTimeoutSec thì timeout đúng MỘT lần, xác nhận muộn vẫn được ghi nhận", () => {
+    const stillOpen = zone({ valve: "open", valveTs: at(0), lastCommandId: "c-open" });
+    expect(closeAck(stillOpen, pc(0), R, at(1))).toBe("timeout");
+    expect(closeAck(stillOpen, pc(0, true), R, at(2))).toBeNull();
+    expect(closeAck(zone({ valve: "closed", valveTs: at(3), lastCommandId: "c-close" }), pc(0, true), R, at(3))).toBe("confirmed");
+  });
+  it("restorePendingClose: chỉ khôi phục khi lệnh gần nhất là close còn sent", () => {
+    expect(restorePendingClose({ cmd: cmd("close", 0), status: "sent" })).toMatchObject({ commandId: "c1", timedOut: false });
+    expect(restorePendingClose({ cmd: cmd("close", 0), status: "completed" })).toBeUndefined();
+    expect(restorePendingClose({ cmd: cmd("open", 0), status: "sent" })).toBeUndefined();
   });
 });

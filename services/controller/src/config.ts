@@ -1,6 +1,7 @@
 import path from "node:path";
 import dotenv from "dotenv";
 import { DEFAULT_IRRIGATION, type IrrigationRules } from "./domain/valve";
+import { DEFAULT_CONFIRM } from "./domain/alerts";
 
 // Dùng chung file .env ở gốc repo với các service của Role A.
 dotenv.config({ path: path.resolve(__dirname, "../../../.env") });
@@ -37,5 +38,10 @@ export const config = {
   telegramChatId: env.TELEGRAM_CHAT_ID,
   tickSec: num(env.CTRL_TICK_SEC ?? env.TICK_SEC, 10),
   alertCooldownSec: num(env.CTRL_ALERT_COOLDOWN_SEC, 600),
+  /** Giây thật: lỗi cảm biến / mất dữ liệu phải kéo dài chừng này mới mở cảnh báo (không chia theo tốc độ mô phỏng). */
+  confirm: {
+    sensorFaultSec: num(env.CTRL_FAULT_CONFIRM_SEC, DEFAULT_CONFIRM.sensorFaultSec),
+    zoneUnknownSec: num(env.CTRL_UNKNOWN_CONFIRM_SEC, DEFAULT_CONFIRM.zoneUnknownSec),
+  },
   autoIrrigation: env.AUTO_IRRIGATION !== "0",
 };
