@@ -1,27 +1,27 @@
 import { EventEmitter } from "node:events";
-import { DEFAULT_THRESHOLDS, type Reading, type Thresholds, type ValveStateMsg, type ZoneState } from "@farm/shared";
-import { applyReading, applyValveState, initZone, refresh, type DropReason } from "./domain/twin";
+import { DEFAULT_THRESHOLDS, type Thresholds, type ZoneState } from "@digital-twin/shared";
+import { applyReading, applyValveState, initZone, refresh, withThresholds, type DropReason, type TwinReading, type ValveUpdate } from "./domain/twin";
+import type { ZoneCatalog } from "./repositories/catalog";
 import type { TwinRepository } from "./repositories/types";
 
 export interface TwinServiceOptions {
   defaultFarmId: string;
-  thresholds?: Thresholds;
-  /** Xuất ra mỗi khi trạng thái zone đổi (để Controller/metrics/SSE theo dõi). */
+  /** Danh mục zone: ngưỡng theo zone. Có catalog thì zone ngoài danh mục bị bỏ (twin_state có FK tới zones). */
+  catalog?: ZoneCatalog;
+  /** Ngưỡng khi không có catalog. */
+  defaultThresholds?: Thresholds;
   onDrop?: (reason: DropReason) => void;
-  onApplied?: (r: Reading) => void;
+  onApplied?: (r: TwinReading) => void;
 }
 
+/** Phát sự kiện "update" (ZoneState) mỗi khi trạng thái zone đổi, để SSE/metrics theo dõi. */
 export class TwinService extends EventEmitter {
-  private th: Thresholds;
   // Tuần tự hóa theo zone để hai reading đồng thời không ghi đè nhau.
   private chains = new Map<string, Promise<unknown>>();
 
   constructor(private repo: TwinRepository, private opts: TwinServiceOptions) {
     super();
-    this.th = opts.thresholds ?? DEFAULT_THRESHOLDS;
   }
-
-  get thresholds() { return this.th; }
 
   private serial<T>(zoneId: string, fn: () => Promise<T>): Promise<T> {
     const prev = this.chains.get(zoneId) ?? Promise.resolve();
@@ -30,13 +30,28 @@ export class TwinService extends EventEmitter {
     return next;
   }
 
-  ingest(r: Reading, now: Date = new Date()): Promise<{ applied: boolean; reason?: DropReason }> {
+  /** Đọc zone hiện tại hoặc tạo mới; luôn áp ngưỡng mới nhất của danh mục. null nếu zone không có trong danh mục. */
+  private async load(zoneId: string, farmId: string | undefined, now: Date): Promise<ZoneState | null> {
+    const info = this.opts.catalog?.get(zoneId);
+    if (this.opts.catalog && !info) return null;
+    const th = info?.thresholds ?? this.opts.defaultThresholds ?? DEFAULT_THRESHOLDS;
+    const cur = await this.repo.get(zoneId);
+    if (!cur) return initZone(zoneId, info?.farmId ?? farmId ?? this.opts.defaultFarmId, now, th);
+    return info && JSON.stringify(cur.thresholds) !== JSON.stringify(th) ? withThresholds(cur, th, now) : cur;
+  }
+
+  ingest(r: TwinReading, now: Date = new Date()): Promise<{ applied: boolean; reason?: DropReason }> {
     return this.serial(r.zoneId, async () => {
-      const cur = (await this.repo.get(r.zoneId)) ?? initZone(r.zoneId, r.farmId ?? this.opts.defaultFarmId, now);
-      const res = applyReading(cur, r, now, this.th);
-      if (res.applied) this.opts.onApplied?.(r); else if (res.reason) this.opts.onDrop?.(res.reason);
-      // Sensor bad vẫn làm đổi snapshot nên vẫn lưu.
-      if (res.applied || res.reason === "bad_quality") {
+      const cur = await this.load(r.zoneId, r.farmId, now);
+      if (!cur) {
+        this.opts.onDrop?.("unknown_zone");
+        return { applied: false, reason: "unknown_zone" as const };
+      }
+      const res = applyReading(cur, r, now);
+      if (res.applied) this.opts.onApplied?.(r);
+      else if (res.reason) this.opts.onDrop?.(res.reason);
+      // Bản tin lỗi cảm biến vẫn đổi snapshot/faultySensors nên vẫn lưu.
+      if (res.applied || res.reason === "sensor_fault") {
         await this.repo.upsert(res.state);
         this.emit("update", res.state);
       }
@@ -44,22 +59,26 @@ export class TwinService extends EventEmitter {
     });
   }
 
-  ingestValveState(msg: ValveStateMsg, now: Date = new Date()): Promise<void> {
-    return this.serial(msg.zoneId, async () => {
-      const cur = (await this.repo.get(msg.zoneId)) ?? initZone(msg.zoneId, this.opts.defaultFarmId, now);
+  ingestValveState(zoneId: string, msg: ValveUpdate, farmId?: string, now: Date = new Date()): Promise<void> {
+    return this.serial(zoneId, async () => {
+      const cur = await this.load(zoneId, farmId, now);
+      if (!cur) return;
       const next = applyValveState(cur, msg);
-      if (next !== cur) { await this.repo.upsert(next); this.emit("update", next); }
+      if (next !== cur) {
+        await this.repo.upsert(next);
+        this.emit("update", next);
+      }
     });
   }
 
-  /** Gọi định kỳ: zone nào đổi status do hết dữ liệu thì cập nhật và phát sự kiện. */
+  /** Gọi định kỳ: zone nào đổi status hoặc danh sách sensor lỗi do hết hạn dữ liệu thì cập nhật và phát sự kiện. */
   async sweepStale(now: Date = new Date()): Promise<ZoneState[]> {
     const changed: ZoneState[] = [];
     for (const z of await this.repo.list()) {
       await this.serial(z.zoneId, async () => {
         const cur = (await this.repo.get(z.zoneId)) ?? z;
-        const next = refresh(cur, now, this.th);
-        if (next.status !== cur.status) {
+        const next = refresh(cur, now);
+        if (next.status !== cur.status || next.faultySensors.join() !== cur.faultySensors.join()) {
           await this.repo.upsert(next);
           this.emit("update", next);
           changed.push(next);

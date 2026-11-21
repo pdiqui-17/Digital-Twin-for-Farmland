@@ -1,13 +1,16 @@
 import { describe, it, expect } from "vitest";
-import { DEFAULT_THRESHOLDS as th } from "@farm/shared";
+import { deriveThresholds } from "@digital-twin/shared";
 import { classifyStatus, fungalConditions, fungalRisk, nextFungalAccum, waterStress } from "../src/domain/derived";
+
+// tối ưu 45-70% -> dry < 45, critical < 35, điểm héo 25
+const th = deriveThresholds(45, 70);
 
 describe("waterStress", () => {
   it("0 khi đủ ẩm, 1 khi dưới điểm héo, tuyến tính ở giữa", () => {
-    expect(waterStress(35, th)).toBe(0);
-    expect(waterStress(30, th)).toBe(0);
-    expect(waterStress(24, th)).toBeCloseTo(0.5);
-    expect(waterStress(18, th)).toBe(1);
+    expect(waterStress(60, th)).toBe(0);
+    expect(waterStress(45, th)).toBe(0);
+    expect(waterStress(35, th)).toBeCloseTo(0.5);
+    expect(waterStress(25, th)).toBe(1);
     expect(waterStress(5, th)).toBe(1);
   });
   it("null khi không có dữ liệu", () => expect(waterStress(null, th)).toBeNull());
@@ -16,10 +19,10 @@ describe("waterStress", () => {
 describe("classifyStatus", () => {
   it("phân loại theo ngưỡng, biên thuộc nhóm tốt hơn", () => {
     expect(classifyStatus(null, th)).toBe("unknown");
-    expect(classifyStatus(21.9, th)).toBe("critical");
-    expect(classifyStatus(22, th)).toBe("dry");
-    expect(classifyStatus(27.9, th)).toBe("dry");
-    expect(classifyStatus(28, th)).toBe("ok");
+    expect(classifyStatus(34.9, th)).toBe("critical");
+    expect(classifyStatus(35, th)).toBe("dry");
+    expect(classifyStatus(44.9, th)).toBe("dry");
+    expect(classifyStatus(45, th)).toBe("ok");
   });
 });
 

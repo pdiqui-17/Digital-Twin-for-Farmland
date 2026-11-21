@@ -1,4 +1,4 @@
-import { clamp, type Thresholds } from "@farm/shared";
+import { clamp, type Thresholds } from "@digital-twin/shared";
 import { forecast, type ForecastPoint, type IrrigationWindow } from "./forecast";
 import type { HourlyWeather } from "./weather";
 import type { Params } from "./waterBalance";

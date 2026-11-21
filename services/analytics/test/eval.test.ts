@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { DEFAULT_THRESHOLDS as th } from "@farm/shared";
+import { SYNTHETIC_THRESHOLDS as th } from "../src/domain/synthetic";
 import { calibrate, type Sample } from "../src/domain/calibrate";
 import { parseCsv, resample, splitByTime } from "../src/domain/dataset";
 import { evaluate, formatTable, mae, rmse } from "../src/domain/evaluate";

@@ -1,4 +1,5 @@
-import type { Reading, SensorType, ZoneState } from "@farm/shared";
+import type { DataQuality, SensorType, ZoneState } from "@digital-twin/shared";
+import type { TwinReading } from "../domain/twin";
 
 export interface TwinRepository {
   get(zoneId: string): Promise<ZoneState | null>;
@@ -18,6 +19,7 @@ export interface HistoryPoint {
   ts: string;
   sensorId: string;
   value: number;
+  quality: DataQuality;
 }
 
 /** Chỉ đọc: bảng sensor_readings do Processor (role A) ghi. */
@@ -27,5 +29,5 @@ export interface HistoryRepository {
 
 /** Chỉ dùng cho test/fake-feed: nhận reading để phục vụ truy vấn lịch sử. */
 export interface WritableHistory extends HistoryRepository {
-  append(r: Reading): void;
+  append(r: TwinReading): void;
 }

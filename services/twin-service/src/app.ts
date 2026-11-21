@@ -1,6 +1,6 @@
 import express from "express";
 import client from "prom-client";
-import { Reading, SensorType, type ZoneState } from "@farm/shared";
+import { CleanTelemetryMessageSchema, SensorTypeSchema, type ZoneState } from "@digital-twin/shared";
 import type { TwinService } from "./service";
 import type { HistoryRepository } from "./repositories/types";
 
@@ -13,10 +13,14 @@ export interface AppDeps {
   devIngest?: boolean;
 }
 
+/** Reading cho POST /ingest: như telemetry.clean nhưng farmId/ingestedAt không bắt buộc. */
+const DevReadingSchema = CleanTelemetryMessageSchema.partial({ farmId: true, ingestedAt: true });
+
 export function createMetrics(registry: client.Registry) {
   return {
     applied: new client.Counter({ name: "twin_readings_applied_total", help: "Readings áp vào twin", registers: [registry] }),
-    dropped: new client.Counter({ name: "twin_readings_dropped_total", help: "Readings bị bỏ", labelNames: ["reason"], registers: [registry] }),
+    dropped: new client.Counter({ name: "twin_readings_dropped_total", help: "Readings không áp vào chỉ số", labelNames: ["reason"], registers: [registry] }),
+    invalid: new client.Counter({ name: "twin_messages_invalid_total", help: "Message Kafka sai schema/JSON", registers: [registry] }),
     ingestLag: new client.Gauge({ name: "twin_ingest_lag_seconds", help: "Độ trễ giữa ts reading và lúc xử lý", registers: [registry] }),
   };
 }
@@ -40,7 +44,7 @@ export function createApp({ service, history, registry = new client.Registry(), 
   if (devIngest) {
     app.post("/ingest", async (req, res) => {
       const items = Array.isArray(req.body) ? req.body : [req.body];
-      const parsed = items.map((x) => Reading.safeParse(x));
+      const parsed = items.map((x) => DevReadingSchema.safeParse(x));
       if (parsed.some((p) => !p.success)) return void res.status(400).json({ error: "invalid_reading" });
       const results = [];
       for (const p of parsed) if (p.success) results.push(await service.ingest(p.data));
@@ -57,7 +61,7 @@ export function createApp({ service, history, registry = new client.Registry(), 
   });
 
   app.get("/zones/:id/history", async (req, res) => {
-    const type = SensorType.safeParse(req.query.metric ?? "soil_moisture");
+    const type = SensorTypeSchema.safeParse(req.query.metric ?? "soil_moisture");
     if (!type.success) return void res.status(400).json({ error: "invalid_metric" });
     const limit = Math.min(5000, Math.max(1, Number(req.query.limit ?? 500) || 500));
     const from = typeof req.query.from === "string" ? req.query.from : undefined;

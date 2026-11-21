@@ -1,4 +1,4 @@
-import { clamp, type Thresholds, type ZoneStatus } from "@farm/shared";
+import { clamp, type Thresholds, type ZoneStatus } from "@digital-twin/shared";
 
 /** Stress nước 0..1: 0 khi độ ẩm >= optimalLow, 1 khi <= wiltingPoint, tuyến tính ở giữa. */
 export function waterStress(moisture: number | null, th: Thresholds): number | null {

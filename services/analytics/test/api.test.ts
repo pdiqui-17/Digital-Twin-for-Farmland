@@ -27,6 +27,18 @@ describe("Analytics API", () => {
     expect(j.scenarios).toHaveLength(2);
     expect(j.best).toBe("tưới 2h");
   });
+  it("whatif dùng ngưỡng của zone khi truyền optimalMin/optimalMax", async () => {
+    const body = (lo: number, hi: number) => ({ moisture: 50, horizonHours: 6, optimalMin: lo, optimalMax: hi, schedules: [{ name: "không tưới", windows: [] }] });
+    const loose = await (await post("/whatif", body(30, 60))).json();
+    const strict = await (await post("/whatif", body(55, 80))).json();
+    expect(loose.scenarios[0].hoursBelowOptimal).toBe(0);
+    expect(strict.scenarios[0].hoursBelowOptimal).toBe(6);
+    expect((await post("/whatif", body(70, 40))).status).toBe(400);
+  });
+  it("/metrics đếm request", async () => {
+    const text = await (await fetch(base + "/metrics")).text();
+    expect(text).toContain("analytics_requests_total");
+  });
   it("body sai trả 400", async () => {
     expect((await post("/forecast", { moisture: "x" })).status).toBe(400);
     expect((await post("/forecast", { moisture: 30, horizonHours: 999 })).status).toBe(400);

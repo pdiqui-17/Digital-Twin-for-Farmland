@@ -1,26 +1,32 @@
-import { type Command, type ZoneState } from "@farm/shared";
+import type { ValveCommandMessage, ZoneState } from "@digital-twin/shared";
 
+/**
+ * Luật tưới. Mốc độ ẩm lấy từ ngưỡng của chính zone (zone.thresholds):
+ *   mở khi độ ẩm < dryBelow, đóng khi đạt optimalLow + stopFraction * (optimalHigh - optimalLow).
+ * Các mốc thời gian cấu hình được qua biến môi trường (để chỉnh khi simulator chạy nhanh hơn thời gian thực).
+ */
 export interface IrrigationRules {
-  /** Mở van khi độ ẩm đất thấp hơn mức này. */
-  openBelow: number;
-  /** Đóng van khi đạt mức này. */
-  stopAt: number;
+  /** 0..1: vị trí mục tiêu trong khoảng tối ưu. */
+  stopFraction: number;
   maxRunSec: number;
   minRestSec: number;
   ackTimeoutSec: number;
-  /** Không tưới khi mưa >= mức này (mm/h). */
-  skipRainMmH: number;
 }
 
 export const DEFAULT_IRRIGATION: IrrigationRules = {
-  openBelow: 26, stopAt: 34, maxRunSec: 1800, minRestSec: 3600, ackTimeoutSec: 30, skipRainMmH: 0.5,
+  stopFraction: 0.5, maxRunSec: 1800, minRestSec: 3600, ackTimeoutSec: 30,
 };
+
+export const openBelow = (z: ZoneState) => z.thresholds.dryBelow;
+export const stopAt = (z: ZoneState, r: IrrigationRules) =>
+  z.thresholds.optimalLow + r.stopFraction * (z.thresholds.optimalHigh - z.thresholds.optimalLow);
 
 export type ValvePhase = "idle" | "pending" | "watering" | "cooldown";
 export interface ValveCtx {
   phase: ValvePhase;
   /** Thời điểm (ms) bắt đầu pha hiện tại. */
   since: number;
+  /** Lệnh open của chu kỳ hiện tại. */
   commandId?: string;
 }
 export const initialValveCtx = (): ValveCtx => ({ phase: "idle", since: 0 });
@@ -31,48 +37,65 @@ export type ValveNote =
 
 export interface ValveDecision {
   ctx: ValveCtx;
-  command: Command | null;
+  command: ValveCommandMessage | null;
   note: ValveNote | null;
 }
 
-const mkCmd = (z: ZoneState, action: "open" | "close", reason: string, now: Date, durationSec?: number): Command => ({
+/** Quy ước tên van trong seed của Role A: valve-<zoneId>. */
+export const actuatorIdFor = (zoneId: string) => `valve-${zoneId}`;
+
+const mkCmd = (z: ZoneState, action: "open" | "close", reason: string, now: Date, durationSec?: number): ValveCommandMessage => ({
   commandId: `cmd-${z.zoneId}-${now.getTime()}-${action}`,
-  zoneId: z.zoneId, farmId: z.farmId, action, durationSec, reason, ts: now.toISOString(),
+  farmId: z.farmId,
+  zoneId: z.zoneId,
+  actuatorId: actuatorIdFor(z.zoneId),
+  action,
+  durationSec,
+  reason,
+  issuedBy: "controller",
+  ts: now.toISOString(),
 });
+
+/** Van đã xác nhận lệnh: ưu tiên khớp lastCommandId, nếu nguồn không gửi thì so thời điểm. */
+function acked(zone: ZoneState, ctx: ValveCtx): boolean {
+  if (zone.valve.state !== "open") return false;
+  if (zone.valve.lastCommandId) return zone.valve.lastCommandId === ctx.commandId;
+  return !!zone.valve.ts && Date.parse(zone.valve.ts) >= ctx.since;
+}
 
 /**
  * Máy trạng thái van: idle -> pending -> watering -> cooldown -> idle.
- * An toàn: thiếu dữ liệu thì không mở; đang tưới mà mất dữ liệu thì đóng.
+ * An toàn: thiếu dữ liệu thì không mở; đang tưới mà mất dữ liệu thì đóng; van không phản hồi thì gửi lệnh đóng.
  */
 export function decide(zone: ZoneState, ctx: ValveCtx, rules: IrrigationRules, now: Date): ValveDecision {
   const t = now.getTime();
   const m = zone.metrics.soilMoisture;
   const elapsed = (t - ctx.since) / 1000;
   const keep = (note: ValveNote | null = null): ValveDecision => ({ ctx, command: null, note });
-  const to = (phase: ValvePhase, command: Command | null, note: ValveNote | null, commandId = ctx.commandId): ValveDecision =>
+  const to = (phase: ValvePhase, command: ValveCommandMessage | null, note: ValveNote | null, commandId = ctx.commandId): ValveDecision =>
     ({ ctx: { phase, since: t, commandId }, command, note });
 
   switch (ctx.phase) {
     case "idle": {
       if (m === null) return keep();
       if (zone.valve.state === "open") return keep(); // van đang mở do nguồn khác
-      if ((zone.metrics.rain ?? 0) >= rules.skipRainMmH) return keep();
-      if (m < rules.openBelow) {
-        const cmd = mkCmd(zone, "open", `độ ẩm ${m.toFixed(1)}% < ${rules.openBelow}%`, now, rules.maxRunSec);
+      if (m < openBelow(zone)) {
+        const cmd = mkCmd(zone, "open", `độ ẩm ${m.toFixed(1)}% < ${openBelow(zone)}%`, now, rules.maxRunSec);
         return to("pending", cmd, "open_issued", cmd.commandId);
       }
       return keep();
     }
     case "pending": {
-      const acked = zone.valve.state === "open" && !!zone.valve.ts && Date.parse(zone.valve.ts) >= ctx.since;
-      if (acked) return to("watering", null, "watering_started");
-      if (elapsed > rules.ackTimeoutSec) return to("cooldown", null, "ack_timeout");
+      if (acked(zone, ctx)) return to("watering", null, "watering_started");
+      if (elapsed > rules.ackTimeoutSec)
+        return to("cooldown", mkCmd(zone, "close", "van không xác nhận lệnh mở, đóng để an toàn", now), "ack_timeout");
       return keep();
     }
     case "watering": {
       const close = (reason: string, note: ValveNote) => to("cooldown", mkCmd(zone, "close", reason, now), note);
+      const target = stopAt(zone, rules);
       if (m === null) return close("mất dữ liệu cảm biến, đóng van an toàn", "data_lost");
-      if (m >= rules.stopAt) return close(`đạt ${m.toFixed(1)}% >= ${rules.stopAt}%`, "target_reached");
+      if (m >= target) return close(`đạt ${m.toFixed(1)}% >= ${target.toFixed(1)}%`, "target_reached");
       if (elapsed >= rules.maxRunSec) return close(`quá ${rules.maxRunSec}s`, "max_run");
       if (zone.valve.state === "closed" && !!zone.valve.ts && Date.parse(zone.valve.ts) > ctx.since)
         return to("cooldown", null, "closed_externally");
@@ -81,4 +104,20 @@ export function decide(zone: ZoneState, ctx: ValveCtx, rules: IrrigationRules, n
     case "cooldown":
       return elapsed >= rules.minRestSec ? to("idle", null, "cooldown_over") : keep();
   }
+}
+
+export type CommandStatus = "sent" | "acknowledged" | "completed" | "failed";
+export interface CommandRecord { cmd: ValveCommandMessage; status: CommandStatus; }
+
+/** Dựng lại pha van sau khi controller khởi động lại, từ lệnh gần nhất của zone (bảng commands). */
+export function restoreValveCtx(last: CommandRecord | undefined, rules: IrrigationRules, now: Date): ValveCtx {
+  if (!last) return initialValveCtx();
+  const since = Date.parse(last.cmd.ts);
+  const age = (now.getTime() - since) / 1000;
+  const cooldownOrIdle = (): ValveCtx => (age < rules.minRestSec ? { phase: "cooldown", since } : initialValveCtx());
+  if (last.cmd.action === "open" && last.status === "sent")
+    return age <= rules.ackTimeoutSec ? { phase: "pending", since, commandId: last.cmd.commandId } : cooldownOrIdle();
+  if (last.cmd.action === "open" && last.status === "acknowledged")
+    return age < rules.maxRunSec ? { phase: "watering", since, commandId: last.cmd.commandId } : cooldownOrIdle();
+  return cooldownOrIdle();
 }

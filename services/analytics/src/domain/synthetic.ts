@@ -1,5 +1,13 @@
-import { clamp } from "@farm/shared";
+import { clamp, type Thresholds } from "@digital-twin/shared";
 import type { Sample } from "./calibrate";
+
+/**
+ * Thang ngưỡng của dữ liệu tổng hợp (đất khô, sức chứa ruộng 40%). Chỉ dùng cho kiểm thử và
+ * `npm run eval` khi chưa có dữ liệu thật; ngưỡng thật của từng zone lấy từ bảng zones.
+ */
+export const SYNTHETIC_THRESHOLDS: Thresholds = {
+  optimalLow: 30, optimalHigh: 38, dryBelow: 28, criticalBelow: 22, wiltingPoint: 18, fieldCapacity: 40, staleAfterSec: 300,
+};
 
 export function mulberry32(seed: number) {
   let a = seed >>> 0;
@@ -17,7 +25,7 @@ export function mulberry32(seed: number) {
  * (bay hơi phụ thuộc độ ẩm, hiệu quả tưới giảm khi đất đã ẩm, có nhiễu) để sai số không đẹp giả tạo.
  * Đây KHÔNG phải simulator của role A, chỉ để kiểm thử khi chưa có dữ liệu thật.
  */
-export function generateSynthetic(hours: number, seed = 42, fieldCapacity = 40): Sample[] {
+export function generateSynthetic(hours: number, seed = 42, fieldCapacity = SYNTHETIC_THRESHOLDS.fieldCapacity): Sample[] {
   const rnd = mulberry32(seed);
   const gauss = () => Math.sqrt(-2 * Math.log(1 - rnd())) * Math.cos(2 * Math.PI * rnd());
   const start = Date.parse("2026-01-01T00:00:00Z");

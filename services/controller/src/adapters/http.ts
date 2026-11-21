@@ -1,4 +1,4 @@
-import type { ZoneState } from "@farm/shared";
+import type { ZoneState } from "@digital-twin/shared";
 import type { TwinSource } from "./ports";
 
 export class HttpTwinSource implements TwinSource {

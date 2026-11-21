@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { DEFAULT_THRESHOLDS as th } from "@farm/shared";
+import { SYNTHETIC_THRESHOLDS as th } from "../src/domain/synthetic";
 import { solve, leastSquares } from "../src/domain/linalg";
 import { simulate, step, type Params, type Input } from "../src/domain/waterBalance";
 import { calibrate, type Sample } from "../src/domain/calibrate";

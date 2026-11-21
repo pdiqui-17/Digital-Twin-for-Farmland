@@ -1,4 +1,4 @@
-import { clamp } from "@farm/shared";
+import { clamp } from "@digital-twin/shared";
 
 /**
  * Mô hình cân bằng nước (xấp xỉ, hệ số được FIT từ dữ liệu, không lấy từ simulator):

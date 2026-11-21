@@ -36,7 +36,7 @@
           "format": "table",
           "rawQuery": true,
           "editorMode": "code",
-          "rawSql": "SELECT zone_id AS zone, state->>'status' AS status, (state->'metrics'->>'soilMoisture')::float AS \"độ ẩm đất %\", (state->'derived'->>'waterStress')::float AS \"stress nước\", (state->'derived'->>'fungalRisk')::float AS \"nguy cơ nấm\", state->'valve'->>'state' AS van, updated_at FROM twin_state ORDER BY zone_id"
+          "rawSql": "SELECT zone_id AS zone, state->>'status' AS status, (state->'metrics'->>'soilMoisture')::float AS \"độ ẩm đất %\", (state->'derived'->>'waterStress')::float AS \"stress nước\", (state->'derived'->>'fungalRisk')::float AS \"nguy cơ nấm\", jsonb_array_length(state->'faultySensors') AS \"sensor lỗi\", state->'valve'->>'state' AS van, updated_at FROM twin_state ORDER BY zone_id"
         }
       ],
       "fieldConfig": {
@@ -104,7 +104,7 @@
           "format": "time_series",
           "rawQuery": true,
           "editorMode": "code",
-          "rawSql": "SELECT $__timeGroupAlias(ts,'1m'), zone_id AS metric, avg(value) AS value FROM sensor_readings WHERE $__timeFilter(ts) AND type='soil_moisture' AND quality <> 'bad' GROUP BY 1,2 ORDER BY 1"
+          "rawSql": "SELECT $__timeGroupAlias(ts,'1m'), zone_id AS metric, avg(value) AS value FROM sensor_readings WHERE $__timeFilter(ts) AND sensor_type='soil_moisture' AND quality IN ('ok','noisy_smoothed') GROUP BY 1,2 ORDER BY 1"
         }
       ]
     },
@@ -127,7 +127,7 @@
           "format": "time_series",
           "rawQuery": true,
           "editorMode": "code",
-          "rawSql": "SELECT $__timeGroupAlias(ts,'1m'), zone_id || ' ' || type AS metric, avg(value) AS value FROM sensor_readings WHERE $__timeFilter(ts) AND type IN ('air_temp','air_humidity') GROUP BY 1,2 ORDER BY 1"
+          "rawSql": "SELECT $__timeGroupAlias(ts,'1m'), zone_id || ' ' || sensor_type AS metric, avg(value) AS value FROM sensor_readings WHERE $__timeFilter(ts) AND sensor_type IN ('air_temperature','air_humidity') AND quality IN ('ok','noisy_smoothed') GROUP BY 1,2 ORDER BY 1"
         }
       ]
     },
@@ -150,7 +150,7 @@
           "format": "table",
           "rawQuery": true,
           "editorMode": "code",
-          "rawSql": "SELECT ts, zone_id, action, reason FROM commands WHERE $__timeFilter(ts) ORDER BY ts DESC LIMIT 50"
+          "rawSql": "SELECT ts, zone_id, action, status, reason FROM commands WHERE $__timeFilter(ts) ORDER BY ts DESC LIMIT 50"
         }
       ]
     },
@@ -173,7 +173,7 @@
           "format": "table",
           "rawQuery": true,
           "editorMode": "code",
-          "rawSql": "SELECT opened_at, closed_at, zone_id, rule, severity, message FROM alerts WHERE opened_at >= $__timeFrom() ORDER BY (closed_at IS NULL) DESC, opened_at DESC LIMIT 100"
+          "rawSql": "SELECT ts AS opened_at, closed_at, zone_id, category, rule, severity, message FROM alerts WHERE ts >= $__timeFrom() ORDER BY (closed_at IS NULL) DESC, ts DESC LIMIT 100"
         }
       ]
     }

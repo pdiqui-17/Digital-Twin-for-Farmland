@@ -1,15 +1,17 @@
 import { readFileSync } from "node:fs";
-import { DEFAULT_THRESHOLDS } from "@farm/shared";
+import { deriveThresholds } from "@digital-twin/shared";
 import { calibrate } from "./domain/calibrate";
 import { parseCsv, resample, splitByTime } from "./domain/dataset";
 import { evaluate, formatTable } from "./domain/evaluate";
-import { generateSynthetic } from "./domain/synthetic";
+import { generateSynthetic, SYNTHETIC_THRESHOLDS } from "./domain/synthetic";
 
-// Dùng: npm run eval            -> dữ liệu tổng hợp
-//       npm run eval -- data.csv -> CSV: ts,moisture,temp,rain,open (một zone, từ sensor_readings + commands)
+// Dùng: npm run eval                         -> dữ liệu tổng hợp
+//       npm run eval -- data.csv 45,70       -> CSV: ts,moisture,temp,rain,open (một zone, từ sensor_readings + commands)
+//                                               kèm khoảng ẩm tối ưu của zone (zones.moisture_optimal_min,max)
 const csv = process.argv[2];
-const th = DEFAULT_THRESHOLDS;
-const source = csv ? "CSV " + csv : "SYNTHETIC (21 ngày, seed 42) - không phải dữ liệu thật";
+const range = (process.argv[3] ?? "45,70").split(",").map(Number) as [number, number];
+const th = csv ? deriveThresholds(range[0], range[1]) : SYNTHETIC_THRESHOLDS;
+const source = csv ? `CSV ${csv} (tối ưu ${range[0]}-${range[1]}%)` : "SYNTHETIC (21 ngày, seed 42) - không phải dữ liệu thật";
 const rows = csv ? resample(parseCsv(readFileSync(csv, "utf8")), 60) : generateSynthetic(21 * 24);
 const { train, test } = splitByTime(rows, 0.7);
 

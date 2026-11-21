@@ -1,36 +1,39 @@
 import { describe, it, expect } from "vitest";
-import type { Reading } from "@farm/shared";
-import { applyReading, applyValveState, initZone, refresh } from "../src/domain/twin";
+import { deriveThresholds } from "@digital-twin/shared";
+import { applyReading, applyValveState, initZone, refresh, withThresholds, type TwinReading } from "../src/domain/twin";
 
+// zone kiểu zone-A trong seed: tối ưu 45-70% -> dry < 45, critical < 35, điểm héo 25
+const th = deriveThresholds(45, 70);
 const t0 = Date.parse("2026-01-01T08:00:00Z");
 const at = (min: number) => new Date(t0 + min * 60_000);
-const rd = (over: Partial<Reading> & { min: number }): Reading => ({
-  sensorId: "s1", zoneId: "z1", type: "soil_moisture", value: 35, unit: "percent",
+const rd = (over: Partial<TwinReading> & { min: number }): TwinReading => ({
+  sensorId: "s1", zoneId: "z1", type: "soil_moisture", value: 50, unit: "percent",
   quality: "ok", ts: at(over.min).toISOString(), ...over,
 });
+const zone = () => initZone("z1", "f1", at(0), th);
 
 describe("applyReading", () => {
   it("reading đầu tiên tạo metrics và status", () => {
-    const r = applyReading(initZone("z1", "f1", at(0)), rd({ min: 0, value: 35 }), at(0));
+    const r = applyReading(zone(), rd({ min: 0, value: 50 }), at(0));
     expect(r.applied).toBe(true);
-    expect(r.state.metrics.soilMoisture).toBe(35);
+    expect(r.state.metrics.soilMoisture).toBe(50);
     expect(r.state.status).toBe("ok");
     expect(r.state.derived.waterStress).toBe(0);
   });
 
   it("trùng ts thì duplicate, ts cũ hơn thì out_of_order, state không đổi", () => {
-    const s1 = applyReading(initZone("z1", "f1", at(0)), rd({ min: 5, value: 35 }), at(5)).state;
+    const s1 = applyReading(zone(), rd({ min: 5, value: 50 }), at(5)).state;
     const dup = applyReading(s1, rd({ min: 5, value: 10 }), at(6));
     const old = applyReading(s1, rd({ min: 1, value: 10 }), at(6));
     expect(dup).toMatchObject({ applied: false, reason: "duplicate" });
     expect(old).toMatchObject({ applied: false, reason: "out_of_order" });
     expect(dup.state).toBe(s1);
-    expect(old.state.metrics.soilMoisture).toBe(35);
+    expect(old.state.metrics.soilMoisture).toBe(50);
   });
 
   it("áp lại cùng một chuỗi message (Kafka giao lại) cho kết quả như nhau", () => {
-    const seq = [rd({ min: 0, value: 30 }), rd({ min: 1, value: 29 }), rd({ min: 2, value: 28 })];
-    let a = initZone("z1", "f1", at(0));
+    const seq = [rd({ min: 0, value: 50 }), rd({ min: 1, value: 49 }), rd({ min: 2, value: 48 })];
+    let a = zone();
     for (const r of seq) a = applyReading(a, r, at(2)).state;
     let b = a;
     for (const r of seq) b = applyReading(b, r, at(2)).state;
@@ -39,31 +42,50 @@ describe("applyReading", () => {
   });
 
   it("reading ở tương lai quá xa bị loại", () => {
-    const r = applyReading(initZone("z1", "f1", at(0)), rd({ min: 60 }), at(0));
+    const r = applyReading(zone(), rd({ min: 60 }), at(0));
     expect(r).toMatchObject({ applied: false, reason: "future_ts" });
   });
 
-  it("sensor quality=bad được ghi vào snapshot nhưng không ảnh hưởng chỉ số", () => {
-    const s1 = applyReading(initZone("z1", "f1", at(0)), rd({ min: 0, value: 35 }), at(0)).state;
-    const r = applyReading(s1, rd({ min: 1, sensorId: "s2", value: 2, quality: "bad" }), at(1));
-    expect(r).toMatchObject({ applied: false, reason: "bad_quality" });
-    expect(r.state.sensors["s2"]?.quality).toBe("bad");
-    expect(r.state.metrics.soilMoisture).toBe(35);
+  it.each(["out_of_range", "stuck", "missing_signal"] as const)(
+    "quality=%s được ghi vào snapshot, đánh dấu sensor lỗi, không ảnh hưởng chỉ số",
+    (quality) => {
+      const s1 = applyReading(zone(), rd({ min: 0, value: 50 }), at(0)).state;
+      const r = applyReading(s1, rd({ min: 1, sensorId: "s2", value: 135, quality }), at(1));
+      expect(r).toMatchObject({ applied: false, reason: "sensor_fault" });
+      expect(r.state.sensors["s2"]?.quality).toBe(quality);
+      expect(r.state.faultySensors).toEqual(["s2"]);
+      expect(r.state.metrics.soilMoisture).toBe(50);
+    },
+  );
+
+  it("sensor hồi phục (bản tin ok mới hơn) thì hết bị đánh dấu lỗi", () => {
+    let s = applyReading(zone(), rd({ min: 0, quality: "stuck" }), at(0)).state;
+    expect(s.faultySensors).toEqual(["s1"]);
+    s = applyReading(s, rd({ min: 1, value: 51 }), at(1)).state;
+    expect(s.faultySensors).toEqual([]);
+    expect(s.metrics.soilMoisture).toBe(51);
   });
 
-  it("nhiều sensor cùng loại lấy trung bình", () => {
-    let s = initZone("z1", "f1", at(0));
-    s = applyReading(s, rd({ min: 0, sensorId: "a", value: 20 }), at(0)).state;
-    s = applyReading(s, rd({ min: 0, sensorId: "b", value: 30 }), at(0)).state;
-    expect(s.metrics.soilMoisture).toBe(25);
+  it("noisy_smoothed vẫn là giá trị dùng được", () => {
+    const r = applyReading(zone(), rd({ min: 0, value: 47, quality: "noisy_smoothed" }), at(0));
+    expect(r.applied).toBe(true);
+    expect(r.state.metrics.soilMoisture).toBe(47);
+  });
+
+  it("nhiều sensor cùng loại lấy trung bình; ngưỡng theo zone", () => {
+    let s = zone();
+    s = applyReading(s, rd({ min: 0, sensorId: "a", value: 35 }), at(0)).state;
+    s = applyReading(s, rd({ min: 0, sensorId: "b", value: 45 }), at(0)).state;
+    expect(s.metrics.soilMoisture).toBe(40);
     expect(s.status).toBe("dry");
+    expect(s.derived.waterStress).toBeCloseTo(0.25);
   });
 
   it("nguy cơ nấm tăng khi ẩm cao + ôn hòa kéo dài, rồi giảm khi hết điều kiện", () => {
-    let s = initZone("z1", "f1", at(0));
+    let s = zone();
     for (let m = 0; m <= 240; m += 2) {
       s = applyReading(s, rd({ min: m, sensorId: "h", type: "air_humidity", unit: "percent", value: 92 }), at(m)).state;
-      s = applyReading(s, rd({ min: m, sensorId: "t", type: "air_temp", unit: "celsius", value: 22 }), at(m)).state;
+      s = applyReading(s, rd({ min: m, sensorId: "t", type: "air_temperature", unit: "celsius", value: 22 }), at(m)).state;
     }
     const high = s.derived.fungalRisk;
     expect(high).toBeGreaterThan(0.5); // ~240 phút / 360
@@ -76,20 +98,31 @@ describe("applyReading", () => {
 
 describe("refresh / stale", () => {
   it("quá staleAfterSec không có dữ liệu thì zone thành unknown", () => {
-    const s = applyReading(initZone("z1", "f1", at(0)), rd({ min: 0, value: 35 }), at(0)).state;
+    const s = applyReading(zone(), rd({ min: 0, value: 50 }), at(0)).state;
     expect(refresh(s, at(4)).status).toBe("ok");
     const stale = refresh(s, at(6));
     expect(stale.status).toBe("unknown");
     expect(stale.metrics.soilMoisture).toBeNull();
     expect(stale.derived.waterStress).toBeNull();
   });
+
+  it("sensor lỗi quá hạn không còn bị liệt kê", () => {
+    const s = applyReading(zone(), rd({ min: 0, quality: "missing_signal" }), at(0)).state;
+    expect(refresh(s, at(6)).faultySensors).toEqual([]);
+  });
+});
+
+describe("withThresholds", () => {
+  it("đổi ngưỡng thì tính lại status", () => {
+    const s = applyReading(zone(), rd({ min: 0, value: 50 }), at(0)).state;
+    expect(withThresholds(s, deriveThresholds(55, 80), at(0)).status).toBe("dry");
+  });
 });
 
 describe("applyValveState", () => {
-  it("bỏ qua trạng thái van cũ hơn", () => {
-    const s0 = initZone("z1", "f1", at(0));
-    const s1 = applyValveState(s0, { zoneId: "z1", state: "open", ts: at(5).toISOString() });
-    const s2 = applyValveState(s1, { zoneId: "z1", state: "closed", ts: at(1).toISOString() });
-    expect(s2.valve.state).toBe("open");
+  it("bỏ qua trạng thái van cũ hơn, giữ lastCommandId", () => {
+    const s1 = applyValveState(zone(), { state: "open", ts: at(5).toISOString(), lastCommandId: "c1" });
+    const s2 = applyValveState(s1, { state: "closed", ts: at(1).toISOString() });
+    expect(s2.valve).toEqual({ state: "open", ts: at(5).toISOString(), lastCommandId: "c1" });
   });
 });
