@@ -1,0 +1,22 @@
+# Build context cho mọi Dockerfile trong repo (build từ gốc monorepo).
+# Dockerfile chỉ COPY package*.json, tsconfig*.json và src/, nên các thư mục dưới đây không cần gửi lên.
+node_modules
+**/node_modules
+**/dist
+**/test
+coverage
+logs
+*.log
+
+# Secret và dữ liệu local: không bao giờ vào build context
+.env
+.env.*
+!.env.example
+.data
+
+# Công cụ và metadata
+.git
+.claude
+.specify
+specs
+.vscode
