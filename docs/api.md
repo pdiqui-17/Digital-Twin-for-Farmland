@@ -221,7 +221,7 @@ Mọi cấu hình truyền bằng biến môi trường (danh sách ở mục 1�
 | `TWIN_URL`, `ANALYTICS_URL` | controller | `http://<tên container twin>:3010`, `http://<tên container analytics>:3012` |
 | `SIM_TIME_SCALE` hoặc `SIMULATOR_TICK_INTERVAL_MS` + `SIMULATOR_PHYSICS_MINUTES_PER_TICK` | twin, controller | PHẢI khớp tốc độ simulator đang chạy |
 
-Nếu dùng `--env-file .env`: `.env` mẫu có `ANALYTICS_MODEL_FILE=` (rỗng) sẽ ghi đè giá trị trong image, nên truyền lại `-e ANALYTICS_MODEL_FILE=/data/analytics-model.json` (hoặc xóa dòng đó khỏi file env).
+Không đặt `ANALYTICS_MODEL_FILE` rỗng (trong `--env-file`, ConfigMap...): biến rỗng ghi đè giá trị `/data/analytics-model.json` của image, analytics quay về đường dẫn không ghi được và `/model/calibrate` trả 500. `.env.example` để dòng này ở dạng comment; muốn đặt thì dùng `/data/analytics-model.json`.
 
 Trên Windows với Git Bash, đặt `export MSYS_NO_PATHCONV=1` trước các lệnh dưới (nếu không, `/data` bị đổi thành đường dẫn Windows và analytics không ghi được hệ số).
 
