@@ -80,7 +80,7 @@ Mỗi service bắt buộc có: `/healthz`, `/readyz`, `/metrics` (prom-client),
 |---|---|---|---|
 | `telemetry.raw` | Message cảm biến thô từ MQTT | Bridge/Processor | Processor |
 | `telemetry.clean` | Dữ liệu đã làm sạch, gắn cờ chất lượng | Processor | Twin Service, Analytics |
-| `alerts` | Sự kiện cảnh báo | Twin Service, Controller | Controller (Telegram/Email) |
+| `alerts` | Sự kiện cảnh báo (có vòng đời open/closed) | Controller | Grafana, service khác nếu cần |
 
 ### 3.3. Bảng cơ sở dữ liệu và quyền ghi
 
@@ -90,9 +90,10 @@ Mỗi service bắt buộc có: `/healthz`, `/readyz`, `/metrics` (prom-client),
 | `sensor_readings` | Hypertable (Timescale) | Processor | Twin Service, Analytics, Grafana |
 | `twin_state` (JSONB) | Postgres thường | Twin Service | Controller, Analytics, Grafana |
 | `commands` | Postgres thường | Controller | Twin Service, Grafana |
-| `alerts` | Postgres thường | Twin Service, Controller | Grafana |
+| `alerts` | Postgres thường | Controller | Grafana |
 
 Nguyên tắc: mỗi bảng chỉ một service được ghi. Service khác chỉ đọc hoặc gọi API.
+Riêng `alerts` (nhóm đã duyệt): Twin Service không ghi; cảm biến lỗi được đưa vào `twin_state.state.faultySensors` và Controller sinh cảnh báo `sensor_fault`. Cột `rule`, `closed_at` thêm ở migration 005.
 
 ### 3.4. Schema message cảm biến (ví dụ)
 
